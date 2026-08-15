@@ -1,0 +1,36 @@
+[project]
+name = "kgharness"
+version = "0.1.0"
+description = "DeepAgents and harness learning  for mutil agents."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "aiofiles>=23.0.0",
+    "deepagents==0.5.7",
+    "fastapi>=0.100.0",
+    "langchain==1.2.17",
+    "langchain-community>=0.2.0",
+    "langchain-core>=0.2.0",
+    "langchain-openai==1.2.1",
+    "langgraph==1.1.10",
+    "markdown>=3.5",
+    "mysql-connector-python>=8.0.0",
+    "openai>=1.0.0",
+    "openpyxl>=3.1.0",
+    "pandas>=2.0.0",
+    "pydantic>=2.0.0",
+    "pypdf>=3.0.0",
+    "python-docx>=1.0.0",
+    "python-dotenv==1.2.2",
+    "python-multipart>=0.0.6",
+    "pyyaml>=6.0",
+    "ragflow-sdk>=0.1.0",
+    "reportlab>=4.0.0",
+    "requests>=2.31.0",
+    "tavily-python==0.7.24",
+    "typing-extensions>=4.5.0",
+    "uvicorn[standard]>=0.20.0",
+]
+
+[tool.uv]
+package = false
+
