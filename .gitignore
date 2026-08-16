@@ -67,4 +67,8 @@ Thumbs.db
 uv.lock
 
 docs
+.env.db
+compose.db.yaml
+local-data
+
 

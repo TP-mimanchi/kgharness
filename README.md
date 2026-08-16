@@ -191,7 +191,18 @@ RAGFlow 不在本仓库的 Docker Compose 中启动，需要接入你已有的 R
 
 如果暂时不使用私有知识库能力，也可以先跑网络搜索、数据库查询和上传文件读取链路；只有任务触发 RAGFlow 助手时才会依赖 `RAGFLOW_API_URL` 和 `RAGFLOW_API_KEY`。
 
+### 7. 云端启动PG
+
+chmod 600 .env.db 
+
+docker compose \
+  --env-file .env.db \
+  -f compose.db.yaml \
+  up -d
+
+
 ### 7. 启动后端
+
 
 ```bash
 uv run uvicorn app.api.server:app --host 0.0.0.0 --port 8000 --reload
@@ -208,12 +219,17 @@ uv run uvicorn app.api.server:app --host 0.0.0.0 --port 8000 --reload
 | `GET /api/download`                 | 下载输出目录中的文件                   |
 | `WebSocket /ws/{thread_id}`         | 推送工具调用、助手调用、结果和异常事件 |
 
+### 8. 启动RAG Worker：
+python -m app.rag.worker
+
 ### 8. 启动前端
 
 ```bash
 cd frontend
 pnpm install
 pnpm dev
+
+
 ```
 
 前端默认连接：
@@ -230,6 +246,8 @@ VITE_API_BASE_URL=http://localhost:8000
 VITE_WS_BASE_URL=ws://localhost:8000
 ```
 
+
+
 ### 9. 试几个任务
 
 ```text
@@ -243,3 +261,5 @@ VITE_WS_BASE_URL=ws://localhost:8000
 ```text
 请先读取我上传的行业报告，再结合公开资料整理一份研究摘要。
 ```
+
+

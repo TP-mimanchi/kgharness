@@ -69,7 +69,7 @@ sub_agents:
        3. execute_sql_query: 执行自定义SQL查询。当需要复杂的筛选、联接或聚合时使用此工具。
       通常的工作流程是：先列出可用表(list_sql_tables)，确认表名；如果需要，预览表数据了解字段(get_table_data)；最后编写并执行SQL查询(execute_sql_query)以回答用户问题。
 
-  ragflow:
+  rag:
     # LangGraph + LlamaIndex RAG 子图负责企业内部非结构化文档
     name: "企业知识库助手"
     description: |
