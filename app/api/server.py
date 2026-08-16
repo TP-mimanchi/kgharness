@@ -7,13 +7,14 @@ WebSocket 长连接。HTTP 接口只做轻量调度，真正的 DeepAgents 执�
 """
 
 import asyncio
-import shutil
+import os
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List
 
 import uvicorn
+import aiofiles
 from fastapi import (
     FastAPI,
     File,
@@ -25,10 +26,16 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.agent.main_agent import run_deep_agent
+from app.agent.main_agent import (
+    initialize_main_agent,
+    run_deep_agent,
+    shutdown_main_agent,
+)
 from app.api.monitor import manager
+from app.rag.api import router as rag_router
+from app.rag.db import initialize_database, shutdown_database
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -40,15 +47,22 @@ async def lifespan(_app: FastAPI):
     """
     loop = asyncio.get_running_loop()
     manager.set_loop(loop)
+    await initialize_database()
+    await initialize_main_agent()
     print(f"[Server] WebSocket Manager bound to loop: {id(loop)}")
-    yield
+    try:
+        yield
+    finally:
+        await shutdown_main_agent()
+        await shutdown_database()
 
 
 # 当前文件位于 app/api/server.py，运行时目录统一收敛到 app 目录
 current_dir = Path(__file__).resolve().parent
 project_root = current_dir.parent
 
-app = FastAPI(title="DeepAgents API", lifespan=lifespan)
+app = FastAPI(title="kgharness Enterprise Research API", lifespan=lifespan)
+app.include_router(rag_router)
 
 # 保存 thread_id -> 后台 Agent 任务，用于同一会话任务替换和主动取消
 active_tasks: dict[str, asyncio.Task] = {}
@@ -62,9 +76,14 @@ updated_dir = project_root / "updated"
 updated_dir.mkdir(exist_ok=True)
 
 # 教学项目通常前后端分别本地启动，这里放开跨域以便 Vite 页面直接调用 API
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -74,8 +93,25 @@ app.add_middleware(
 class TaskRequest(BaseModel):
     """前端启动任务时提交的请求体。"""
 
-    query: str
-    thread_id: str = None
+    query: str = Field(min_length=1, max_length=12000)
+    thread_id: str | None = None
+
+
+def _canonical_thread_id(value: str) -> str:
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, AttributeError) as error:
+        raise HTTPException(status_code=400, detail="thread_id 必须是合法 UUID") from error
+
+
+@app.get("/health")
+async def health():
+    from app.rag.db import database
+
+    healthy = await database.health()
+    if not healthy:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    return {"status": "ok", "database": "ok"}
 
 
 def _forget_task(thread_id: str, task: asyncio.Task) -> None:
@@ -97,7 +133,7 @@ async def run_task(request: TaskRequest):
     HTTP 请求只负责创建后台协程并立即返回，后续执行轨迹、子智能体调用和最终
     答案都会由 monitor 通过 `/ws/{thread_id}` 推送给同一会话的前端。
     """
-    thread_id = request.thread_id or str(uuid.uuid4())
+    thread_id = _canonical_thread_id(request.thread_id) if request.thread_id else str(uuid.uuid4())
 
     # 同一个 thread_id 只保留一个活跃任务，新任务会先取消旧任务，避免并发写同一会话目录
     old_task = active_tasks.get(thread_id)
@@ -120,6 +156,7 @@ async def cancel_task(thread_id: str):
     注意：取消会向 asyncio.Task 注入 CancelledError。若底层第三方工具正在执行不可中断
     的同步阻塞调用，任务可能需要等该调用返回后才会真正结束。
     """
+    thread_id = _canonical_thread_id(thread_id)
     task = active_tasks.get(thread_id)
     if not task or task.done():
         active_tasks.pop(thread_id, None)
@@ -157,16 +194,30 @@ async def upload_files(files: List[UploadFile] = File(...), thread_id: str = For
         thread_id (str): 关联的任务会话 ID。
     """
     # 上传文件先按会话隔离保存，避免不同任务读取到彼此的附件
+    thread_id = _canonical_thread_id(thread_id)
     target_dir = updated_dir / f"session_{thread_id}"
     target_dir.mkdir(parents=True, exist_ok=True)
 
     saved_files = []
     for file in files:
-        file_path = target_dir / file.filename
-        # 直接复制文件流，避免大文件一次性读入内存
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        saved_files.append(file.filename)
+        safe_name = Path(file.filename or "upload").name
+        if not safe_name or safe_name in {".", ".."}:
+            raise HTTPException(status_code=400, detail="无效文件名")
+        file_path = target_dir / safe_name
+        size = 0
+        try:
+            async with aiofiles.open(file_path, "wb") as buffer:
+                while chunk := await file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > 100 * 1024 * 1024:
+                        raise HTTPException(status_code=413, detail="文件超过 100MB 限制")
+                    await buffer.write(chunk)
+        except Exception:
+            file_path.unlink(missing_ok=True)
+            raise
+        finally:
+            await file.close()
+        saved_files.append(safe_name)
 
     return {"status": "uploaded", "files": saved_files}
 
@@ -266,6 +317,15 @@ async def websocket_endpoint(websocket: WebSocket, thread_id: str):
     发送事件时只需要按 thread_id 查找连接，就能把进度推给对应页面。循环中的
     receive_text 用于接收前端心跳，避免连接空闲断开。
     """
+    try:
+        thread_id = str(uuid.UUID(thread_id))
+    except ValueError:
+        await websocket.close(code=1008, reason="thread_id 必须是合法 UUID")
+        return
+    origin = websocket.headers.get("origin")
+    if origin and origin not in cors_origins:
+        await websocket.close(code=1008, reason="WebSocket Origin 不允许")
+        return
     print(f"会话向我们发起了请求，要求建立连接：{thread_id} 对应：{websocket}")
 
     # 连接建立后立即按 thread_id 注册，monitor 后续才能把事件定向推给当前页面

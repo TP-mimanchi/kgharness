@@ -1,0 +1,13 @@
+.git
+.venv
+.uv-cache
+.env
+app/output
+app/updated
+app/rag_data
+frontend/node_modules
+frontend/dist
+__pycache__
+*.pyc
+tests
+

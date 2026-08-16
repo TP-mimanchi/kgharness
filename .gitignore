@@ -60,8 +60,11 @@ npm-debug.log
 yarn-error.log
 testem.log
 /typings
-uv.lock
 
 # System Files
 .DS_Store
 Thumbs.db
+uv.lock
+
+docs
+

@@ -50,10 +50,10 @@ const TASK_EXAMPLES = [
     icon: <DatabaseOutlined aria-hidden />,
   },
   {
-    tool: "RAGFlow 知识库",
+    tool: "企业知识库",
     title: "内部文档问答",
     prompt:
-      "请使用 RAGFlow 助手，查询公司内部白皮书中关于品类策略的内容，并整理成三条可执行建议。",
+      "请使用企业知识库助手，查询公司内部白皮书中关于品类策略的内容，并整理成三条可执行建议。",
     icon: <FileSearchOutlined aria-hidden />,
   },
   {

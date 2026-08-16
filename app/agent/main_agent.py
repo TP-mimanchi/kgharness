@@ -11,7 +11,7 @@ import shutil
 from pathlib import Path
 
 from deepagents import create_deep_agent
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from app.agent.llm import model
 from app.agent.prompts import main_agent_content
@@ -24,6 +24,7 @@ from app.api.context import (
     set_thread_context,
 )
 from app.api.monitor import monitor
+from app.rag.config import settings as rag_settings
 
 # 文件类工具由主智能体直接掌握，负责读取上传附件和生成最终交付文档
 from app.tools.markdown_tools import generate_markdown
@@ -34,13 +35,40 @@ from app.tools.upload_file_read_tool import read_file_content
 # 1. tools 只放最终交付相关的文件工具
 # 2. subagents 放网络、数据库、RAGFlow 三类信息获取助手
 # 3. checkpointer 通过 thread_id 保存同一会话中的执行上下文
-main_agent = create_deep_agent(
-    model=model,
-    system_prompt=main_agent_content["system_prompt"],
-    tools=[generate_markdown, convert_md_to_pdf, read_file_content],
-    checkpointer=InMemorySaver(),
-    subagents=[database_query_agent, network_search_agent, knowledge_base_agent],
-)
+main_agent = None
+_main_agent_lock = asyncio.Lock()
+_checkpointer_context = None
+
+
+async def initialize_main_agent():
+    """Build the agent once with a durable PostgreSQL checkpointer."""
+    global main_agent, _checkpointer_context
+    if main_agent is not None:
+        return main_agent
+    async with _main_agent_lock:
+        if main_agent is not None:
+            return main_agent
+        _checkpointer_context = AsyncPostgresSaver.from_conn_string(
+            rag_settings.database_url
+        )
+        checkpointer = await _checkpointer_context.__aenter__()
+        await checkpointer.setup()
+        main_agent = create_deep_agent(
+            model=model,
+            system_prompt=main_agent_content["system_prompt"],
+            tools=[generate_markdown, convert_md_to_pdf, read_file_content],
+            checkpointer=checkpointer,
+            subagents=[database_query_agent, network_search_agent, knowledge_base_agent],
+        )
+        return main_agent
+
+
+async def shutdown_main_agent() -> None:
+    global main_agent, _checkpointer_context
+    main_agent = None
+    if _checkpointer_context is not None:
+        await _checkpointer_context.__aexit__(None, None, None)
+        _checkpointer_context = None
 
 # 当前文件位于 app/agent/main_agent.py，parents[1] 即 app 目录
 project_root_path = Path(__file__).parents[1].resolve()
@@ -109,8 +137,9 @@ async def run_deep_agent(task_query, session_id):
     """
 
     try:
+        agent = await initialize_main_agent()
         # astream 会持续产出模型节点、工具节点和子智能体节点的状态片段
-        async for chunk in main_agent.astream(
+        async for chunk in agent.astream(
             {"messages": [{"role": "user", "content": task_query + path_instruction}]},
             config=config,
         ):

@@ -29,12 +29,6 @@ def resolve_path(filename: str, session_dir: Optional[str] = None) -> str:
             path_str = str(path).replace("\\", "/")
             break
 
-    # updated/ 用于存放用户上传文件，应优先按项目根目录下的真实上传路径解析
-    if "updated/" in path_str:
-        idx = path_str.find("updated/")
-        relative_part = path_str[idx:]
-        return str(Path(relative_part).resolve())
-
     if not session_dir:
         return str(path.resolve())
 
@@ -55,8 +49,7 @@ def resolve_path(filename: str, session_dir: Optional[str] = None) -> str:
         except Exception:
             pass
 
-        # 真实绝对路径且不在 session_dir 中时保持原样，避免误改外部资源路径
-        return str(full_path)
+        raise ValueError("禁止访问当前会话目录之外的绝对路径")
 
     parts = path.parts
 
@@ -67,7 +60,10 @@ def resolve_path(filename: str, session_dir: Optional[str] = None) -> str:
     if parts and parts[0] == "output":
         return str(session_path / path.name)
 
-    return str(session_path / path)
+    candidate = (session_path / path).resolve()
+    if not candidate.is_relative_to(session_path):
+        raise ValueError("禁止访问当前会话目录之外的路径")
+    return str(candidate)
 
 
 def _fix_nested_session_path(

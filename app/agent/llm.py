@@ -8,13 +8,20 @@
 import os
 
 from dotenv import find_dotenv, load_dotenv
-from langchain.chat_models import init_chat_model
+from langchain_openai import ChatOpenAI
 
 # find_dotenv 会从当前目录向上查找 .env，适合脚本和 Web 服务从不同入口启动的场景
 load_dotenv(find_dotenv())
 
-# 使用 OpenAI 兼容协议接入模型；具体模型名由 .env 中的 LLM_QWEN_MAX 控制
-model = init_chat_model(
-    model=os.getenv("LLM_QWEN_MAX"),
-    model_provider="openai",
+# 仅复用 OpenAI 兼容协议；实际服务、模型和密钥均来自阿里云百炼。
+model = ChatOpenAI(
+    model=os.getenv("LLM_QWEN_MAX", "qwen-max"),
+    api_key=os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY"),
+    base_url=os.getenv("DASHSCOPE_BASE_URL")
+    or os.getenv(
+        "OPENAI_BASE_URL",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    ),
+    timeout=60,
+    max_retries=2,
 )
