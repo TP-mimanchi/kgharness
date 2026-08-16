@@ -50,6 +50,12 @@ class IngestionJobView(BaseModel):
     updated_at: datetime
 
 
+class KnowledgeDocumentView(DocumentView):
+    """A knowledge-base document together with its latest ingestion job."""
+
+    latest_job: IngestionJobView | None = None
+
+
 class RetrievalRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     knowledge_base_ids: list[UUID] = Field(default_factory=list, max_length=20)

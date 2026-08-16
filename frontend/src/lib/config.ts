@@ -25,3 +25,6 @@ export const API_BASE_URL = stripTrailingSlash(
 );
 
 export const WS_BASE_URL = deriveWsBaseUrl(API_BASE_URL);
+
+export const TENANT_ID =
+  import.meta.env.VITE_TENANT_ID || "00000000-0000-0000-0000-000000000001";

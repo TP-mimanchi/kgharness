@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import aiofiles
-from fastapi import APIRouter, Depends, File, Header, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
 from langchain_core.messages import HumanMessage
 from psycopg.errors import UniqueViolation
 
@@ -18,6 +18,7 @@ from app.rag.parsers import SUPPORTED_SUFFIXES
 from app.rag.schemas import (
     DocumentView,
     IngestionJobView,
+    KnowledgeDocumentView,
     KnowledgeBaseCreate,
     KnowledgeBaseView,
     RetrievalRequest,
@@ -129,6 +130,27 @@ async def upload_knowledge_document(
         "document": DocumentView.model_validate(document),
         "job": IngestionJobView.model_validate(job),
     }
+
+
+@router.get(
+    "/knowledge-bases/{knowledge_base_id}/documents",
+    response_model=list[KnowledgeDocumentView],
+)
+async def list_knowledge_documents(
+    knowledge_base_id: UUID,
+    limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    tenant_id: UUID = Depends(_tenant_id),
+):
+    if not await database.knowledge_base_exists(tenant_id, knowledge_base_id):
+        raise HTTPException(status_code=404, detail="knowledge base not found")
+    rows = await database.list_knowledge_base_documents(
+        tenant_id,
+        knowledge_base_id,
+        limit=limit,
+        offset=offset,
+    )
+    return [KnowledgeDocumentView.model_validate(row) for row in rows]
 
 
 @router.get("/documents/{document_id}", response_model=DocumentView)

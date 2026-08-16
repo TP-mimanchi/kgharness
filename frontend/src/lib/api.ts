@@ -1,5 +1,15 @@
-import { API_BASE_URL } from "./config";
-import type { CancelTaskResponse, FileListResponse, TaskResponse, UploadResponse } from "../types";
+import { API_BASE_URL, TENANT_ID } from "./config";
+import type {
+  CancelTaskResponse,
+  FileListResponse,
+  IngestionJob,
+  KnowledgeBase,
+  KnowledgeDocument,
+  KnowledgeUploadResponse,
+  RetrievalResponse,
+  TaskResponse,
+  UploadResponse
+} from "../types";
 
 function apiUrl(path: string): string {
   return `${API_BASE_URL}${path}`;
@@ -66,4 +76,75 @@ export function getDownloadUrl(path: string): string {
   const url = new URL(apiUrl("/api/download"));
   url.searchParams.set("path", path);
   return url.toString();
+}
+
+function ragHeaders(headers?: HeadersInit): Headers {
+  const result = new Headers(headers);
+  result.set("X-Tenant-ID", TENANT_ID);
+  return result;
+}
+
+export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {
+  return requestJson<KnowledgeBase[]>(apiUrl("/api/v1/knowledge-bases"), {
+    headers: ragHeaders()
+  });
+}
+
+export async function createKnowledgeBase(
+  name: string,
+  description: string
+): Promise<KnowledgeBase> {
+  return requestJson<KnowledgeBase>(apiUrl("/api/v1/knowledge-bases"), {
+    method: "POST",
+    headers: ragHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ name, description })
+  });
+}
+
+export async function listKnowledgeDocuments(
+  knowledgeBaseId: string
+): Promise<KnowledgeDocument[]> {
+  return requestJson<KnowledgeDocument[]>(
+    apiUrl(`/api/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/documents`),
+    { headers: ragHeaders() }
+  );
+}
+
+export async function uploadKnowledgeDocument(
+  knowledgeBaseId: string,
+  file: File
+): Promise<KnowledgeUploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  return requestJson<KnowledgeUploadResponse>(
+    apiUrl(`/api/v1/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}/documents`),
+    {
+      method: "POST",
+      headers: ragHeaders(),
+      body: formData
+    }
+  );
+}
+
+export async function retryIngestionJob(jobId: string): Promise<IngestionJob> {
+  return requestJson<IngestionJob>(
+    apiUrl(`/api/v1/ingestion-jobs/${encodeURIComponent(jobId)}/retry`),
+    { method: "POST", headers: ragHeaders() }
+  );
+}
+
+export async function searchKnowledge(
+  query: string,
+  knowledgeBaseIds: string[]
+): Promise<RetrievalResponse> {
+  return requestJson<RetrievalResponse>(apiUrl("/api/v1/retrieval/search"), {
+    method: "POST",
+    headers: ragHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      query,
+      knowledge_base_ids: knowledgeBaseIds,
+      top_k: 8,
+      debug: false
+    })
+  });
 }

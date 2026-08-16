@@ -287,6 +287,42 @@ class RAGDatabase:
             ).fetchone()
             return dict(row) if row else None
 
+    async def list_knowledge_base_documents(
+        self,
+        tenant_id: UUID,
+        knowledge_base_id: UUID,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        async with self.connection() as connection:
+            rows = await (
+                await connection.execute(
+                    """
+                    SELECT doc.*,
+                           CASE
+                               WHEN job.id IS NULL THEN NULL
+                               ELSE to_jsonb(job)
+                           END AS latest_job
+                    FROM rag_documents doc
+                    LEFT JOIN LATERAL (
+                        SELECT candidate.*
+                        FROM rag_ingestion_jobs candidate
+                        WHERE candidate.document_id = doc.id
+                        ORDER BY candidate.created_at DESC
+                        LIMIT 1
+                    ) job ON true
+                    WHERE doc.tenant_id = %s
+                      AND doc.knowledge_base_id = %s
+                      AND doc.status <> 'deleted'
+                    ORDER BY doc.created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (tenant_id, knowledge_base_id, limit, offset),
+                )
+            ).fetchall()
+            return [dict(row) for row in rows]
+
     async def get_job(self, tenant_id: UUID, job_id: UUID) -> dict[str, Any] | None:
         async with self.connection() as connection:
             row = await (

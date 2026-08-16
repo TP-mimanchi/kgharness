@@ -1,17 +1,20 @@
 import {
   ApiOutlined,
+  BookOutlined,
   BranchesOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
   CloudServerOutlined,
   DatabaseOutlined,
   FileSearchOutlined,
+  MessageOutlined,
   ToolOutlined
 } from "@ant-design/icons";
 import { Alert, App as AntApp, Button } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { ChatComposer } from "./components/ChatComposer";
 import { ConversationThread } from "./components/ConversationThread";
+import { KnowledgeBasePage } from "./components/KnowledgeBasePage";
 import type { ChatTurn } from "./components/ConversationThread";
 import { API_BASE_URL, WS_BASE_URL } from "./lib/config";
 import { useDeepAgentSession } from "./hooks/useDeepAgentSession";
@@ -44,6 +47,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [stagedItems, setStagedItems] = useState<UploadedItem[]>([]);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [activePage, setActivePage] = useState<"chat" | "knowledge">("chat");
   const streamRef = useRef<HTMLElement | null>(null);
   const session = useDeepAgentSession();
 
@@ -134,6 +138,7 @@ export default function App() {
     setTurns([]);
     setQuery("");
     setStagedItems([]);
+    setActivePage("chat");
   }
 
   const online = session.connectionState === "connected";
@@ -147,9 +152,26 @@ export default function App() {
           <p>对话式多智能体研究台</p>
         </div>
 
-        <Button className="new-chat-button" block onClick={handleNewSession}>
-          新建研搜
-        </Button>
+        <nav className="sidebar-nav" aria-label="主要功能">
+          <button
+            className={activePage === "chat" ? "sidebar-nav-item sidebar-nav-item--active" : "sidebar-nav-item"}
+            onClick={() => setActivePage("chat")}
+            type="button"
+          >
+            <MessageOutlined />
+            智能研搜
+          </button>
+          <button
+            className={activePage === "knowledge" ? "sidebar-nav-item sidebar-nav-item--active" : "sidebar-nav-item"}
+            onClick={() => setActivePage("knowledge")}
+            type="button"
+          >
+            <BookOutlined />
+            知识库管理
+          </button>
+        </nav>
+
+        <Button className="new-chat-button" block onClick={handleNewSession}>新建研搜</Button>
 
         <div className="sidebar-section">
           <span className="sidebar-label">THREAD</span>
@@ -206,7 +228,7 @@ export default function App() {
         </div>
       </aside>
 
-      <main className="chat-main">
+      {activePage === "knowledge" ? <KnowledgeBasePage /> : <main className="chat-main">
         <header className="chat-topbar">
           <div>
             <span className="panel-kicker">CHAT WORKSPACE</span>
@@ -248,7 +270,7 @@ export default function App() {
           stagedItems={stagedItems}
           uploadedItems={session.uploadedItems}
         />
-      </main>
+      </main>}
     </div>
   );
 }
