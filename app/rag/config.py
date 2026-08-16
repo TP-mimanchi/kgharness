@@ -84,8 +84,7 @@ class RAGSettings:
             embedding_dimension=_int_env("RAG_EMBEDDING_DIMENSION", 1024, 64, 4096),
             # Alibaba text-embedding-v3/v4 accepts at most 10 texts per request.
             embedding_batch_size=_int_env("RAG_EMBEDDING_BATCH_SIZE", 10, 1, 10),
-            dashscope_api_key=os.getenv("DASHSCOPE_API_KEY")
-            or os.getenv("OPENAI_API_KEY"),
+            dashscope_api_key=os.getenv("DASHSCOPE_API_KEY") or os.getenv("OPENAI_API_KEY"),
             dashscope_base_url=dashscope_base_url,
             rerank_model=rerank_model,
             rerank_url=rerank_url,

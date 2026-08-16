@@ -68,7 +68,7 @@ uv.lock
 
 docs
 .env.db
-compose.db.yaml
+docker/compose.db.yaml
 local-data
 
 

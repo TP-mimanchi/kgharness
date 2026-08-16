@@ -1,6 +1,5 @@
 """Enterprise RAG LangGraph compiled subagent configuration."""
 from deepagents import CompiledSubAgent
-
 from app.agent.prompts import sub_agents_content
 from app.rag.graph import rag_graph
 

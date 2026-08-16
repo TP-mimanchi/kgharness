@@ -15,8 +15,8 @@ load_dotenv(find_dotenv())
 # 仅复用 OpenAI 兼容协议；实际服务、模型和密钥均来自阿里云百炼。
 model = ChatOpenAI(
     model=os.getenv("LLM_QWEN_MAX", "qwen-max"),
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    base_url=os.getenv("DASHSCOPE_BASE_URL"),
+    api_key=os.getenv("DASHSCOPE_API_KEY", os.getenv("OPENAI_API_KEY")),
+    base_url=os.getenv("DASHSCOPE_BASE_URL", os.getenv("OPENAI_BASE_URL")),
     timeout=60,
     max_retries=2,
 )
