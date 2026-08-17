@@ -151,6 +151,8 @@ async def run_deep_agent(task_query, session_id):
                 if messages and isinstance(messages, list):
                     last_msg = messages[-1]
                     if node_name == "model":
+                        # 每个 model 节点对应一次主模型推理，供前端按当前对话独立计数
+                        monitor.report_model()
                         if last_msg.tool_calls:
                             # DeepAgents 调用子智能体时，本质上会产生名为 task 的工具调用
                             for tool_call in last_msg.tool_calls:

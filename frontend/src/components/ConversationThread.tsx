@@ -10,6 +10,7 @@ import {
   FilePdfOutlined,
   FileSearchOutlined,
   FileTextOutlined,
+  RobotOutlined,
   StopOutlined,
   ToolOutlined,
 } from "@ant-design/icons";
@@ -17,9 +18,9 @@ import { Button, Tooltip } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { getDownloadUrl } from "../lib/api";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { AgentStateRibbon } from "./AgentStateRibbon";
-import type { AgentPhase } from "./AgentStateRibbon";
 import type { MonitorMessage, OutputFile } from "../types";
+
+type AgentPhase = "listening" | "thinking" | "executing" | "complete";
 
 export interface ChatTurn {
   id: string;
@@ -146,6 +147,9 @@ function getThinkingDuration(
 }
 
 function EventIcon({ event }: { event: string }) {
+  if (event === "model_call") {
+    return <RobotOutlined aria-hidden />;
+  }
   if (event === "assistant_call") {
     return <BranchesOutlined aria-hidden />;
   }
@@ -265,16 +269,23 @@ function ArtifactShelf({ files }: { files: OutputFile[] }) {
   );
 }
 
-function ThinkingLoader({ durationLabel }: { durationLabel: string }) {
+const PHASE_LABELS: Record<AgentPhase, string> = {
+  listening: "正在聆听",
+  thinking: "正在思考",
+  executing: "正在执行",
+  complete: "已完成",
+};
+
+function ThinkingLoader({ durationLabel, phase }: { durationLabel: string; phase: AgentPhase }) {
   return (
     <div
-      className="thinking-loader"
+      className={`thinking-loader thinking-loader--${phase}`}
       aria-live="polite"
-      aria-label="正在生成回复"
+      aria-label={PHASE_LABELS[phase]}
     >
       <div className="loader-status">
         <span className="loader-pulse" aria-hidden />
-        <strong>正在研搜</strong>
+        <strong>{PHASE_LABELS[phase]}</strong>
         <span className="loader-duration">已思考 {durationLabel}</span>
         <span className="loader-dots" aria-hidden>
           <i />
@@ -289,6 +300,23 @@ function ThinkingLoader({ durationLabel }: { durationLabel: string }) {
         <li>汇总答案</li>
       </ul>
     </div>
+  );
+}
+
+function TurnTelemetry({ events }: { events: MonitorMessage[] }) {
+  const modelCalls = events.filter((event) => event.event === "model_call").length;
+  const toolCalls = events.filter((event) => event.event === "tool_start").length;
+  const assistantCalls = events.filter((event) => event.event === "assistant_call").length;
+
+  return (
+    <header className="turn-telemetry" aria-label="本轮调用统计">
+      <span className="turn-telemetry-label">THIS TURN</span>
+      <dl>
+        <div><dt>模型</dt><dd>{modelCalls}</dd></div>
+        <div><dt>工具</dt><dd>{toolCalls}</dd></div>
+        <div><dt>子智能体</dt><dd>{assistantCalls}</dd></div>
+      </dl>
+    </header>
   );
 }
 
@@ -336,8 +364,6 @@ function AssistantMessage({
           <time>{syncLabel}</time>
         </div>
 
-        <AgentStateRibbon phase={agentPhase} />
-
         <details
           className="thinking-block"
           open={isRunning || events.length > 0}
@@ -354,12 +380,17 @@ function AssistantMessage({
 
         {result ? (
           <div className="assistant-answer">
+            <div className="agent-completion-status" aria-label="Agent 已完成">
+              <span aria-hidden />
+              <strong>已完成</strong>
+              <small>用时 {durationLabel}</small>
+            </div>
             <MarkdownRenderer content={result} />
           </div>
         ) : (
           <div className="assistant-answer assistant-answer--pending">
             {isRunning ? (
-              <ThinkingLoader durationLabel={durationLabel} />
+              <ThinkingLoader durationLabel={durationLabel} phase={agentPhase} />
             ) : (
               "任务完成后会在这里显示最终回复。"
             )}
@@ -432,6 +463,7 @@ export function ConversationThread({
     <div className="conversation-thread" aria-label="聊天消息流">
       {turns.map((turn) => (
         <div className="conversation-turn" key={turn.id}>
+          <TurnTelemetry events={turn.events} />
           <article className="chat-message chat-message--user">
             <div className="message-bubble">
               <div className="message-meta">

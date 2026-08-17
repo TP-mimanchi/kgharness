@@ -4,6 +4,7 @@ export type MonitorEventName =
   | "session_created"
   | "tool_start"
   | "assistant_call"
+  | "model_call"
   | "task_result"
   | "task_cancelled"
   | "error"

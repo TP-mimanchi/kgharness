@@ -123,6 +123,10 @@ class ToolMonitor:
             {"assistant_name": assistant_name, "args": args},
         )
 
+    def report_model(self) -> None:
+        """报告主模型完成一次推理节点调用"""
+        self._emit("model_call", "主模型完成一次推理")
+
     def report_task_result(self, result: str) -> None:
         """报告任务最终结果"""
         self._emit("task_result", "任务执行完成", {"result": result})

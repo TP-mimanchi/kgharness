@@ -5,6 +5,7 @@ import {
   CloseCircleOutlined,
   CloudServerOutlined,
   DatabaseOutlined,
+  DownOutlined,
   FileSearchOutlined,
   MessageOutlined,
   ToolOutlined
@@ -210,23 +211,33 @@ export default function App() {
           </div>
         </div>
 
-        <div className="sidebar-section">
-          <span className="sidebar-label">AGENTS</span>
+        <details className="agent-selector">
+          <summary>
+            <span>
+              <BranchesOutlined aria-hidden />
+              <span>
+                <small>SUB AGENTS</small>
+                <strong>子智能体</strong>
+              </span>
+            </span>
+            <em>3</em>
+            <DownOutlined className="agent-selector-chevron" aria-hidden />
+          </summary>
           <ul className="agent-mini-list">
             <li>
               <CloudServerOutlined aria-hidden />
-              网络搜索助手
+              <span><strong>网络搜索助手</strong><small>公开信息检索</small></span>
             </li>
             <li>
               <DatabaseOutlined aria-hidden />
-              数据库查询助手
+              <span><strong>数据库查询助手</strong><small>结构化业务数据</small></span>
             </li>
             <li>
               <FileSearchOutlined aria-hidden />
-              企业知识库助手
+              <span><strong>企业知识库助手</strong><small>内部文档证据</small></span>
             </li>
           </ul>
-        </div>
+        </details>
 
         <div className="sidebar-section sidebar-endpoints">
           <span className="sidebar-label">SESSION · {session.threadId.slice(0, 8)}</span>
