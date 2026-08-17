@@ -2,7 +2,6 @@ import {
   ApiOutlined,
   BookOutlined,
   BranchesOutlined,
-  CheckCircleOutlined,
   CloseCircleOutlined,
   CloudServerOutlined,
   DatabaseOutlined,
@@ -15,6 +14,8 @@ import { useEffect, useRef, useState } from "react";
 import { ChatComposer } from "./components/ChatComposer";
 import { ConversationThread } from "./components/ConversationThread";
 import { KnowledgeBasePage } from "./components/KnowledgeBasePage";
+import { AgentStateRibbon } from "./components/AgentStateRibbon";
+import type { AgentPhase } from "./components/AgentStateRibbon";
 import type { ChatTurn } from "./components/ConversationThread";
 import { API_BASE_URL, WS_BASE_URL } from "./lib/config";
 import { useDeepAgentSession } from "./hooks/useDeepAgentSession";
@@ -71,6 +72,10 @@ export default function App() {
   }, [session.events, session.files, session.isRunning, session.result]);
 
   useEffect(() => {
+    if (turns.length === 0) {
+      return;
+    }
+
     const streamNode = streamRef.current;
     if (!streamNode) {
       return;
@@ -142,15 +147,33 @@ export default function App() {
   }
 
   const online = session.connectionState === "connected";
+  const latestTurn = turns.at(-1);
+  let agentPhase: AgentPhase = "listening";
+  if (session.isRunning) {
+    agentPhase = session.stats.toolEvents > 0 ? "executing" : "thinking";
+  } else if (latestTurn && !latestTurn.isRunning && latestTurn.result) {
+    agentPhase = "complete";
+  }
 
   return (
     <div className="chat-app-shell min-h-dvh">
       <aside className="chat-sidebar" aria-label="会话信息">
         <div className="sidebar-brand">
-          <span className="panel-kicker">DEEPSEARCH</span>
-          <h1>深度研搜</h1>
-          <p>对话式多智能体研究台</p>
+          <span className="brand-mark" aria-hidden>深</span>
+          <div>
+            <span className="panel-kicker">DEEPSEARCH</span>
+            <h1>深度研搜</h1>
+          </div>
         </div>
+
+        <button className="workspace-switcher" type="button">
+          <span className={`workspace-signal ${online ? "workspace-signal--online" : ""}`} />
+          <span>
+            <small>当前工作区</small>
+            <strong>研究实验室</strong>
+          </span>
+          <em>{connectionLabel(session.connectionState)}</em>
+        </button>
 
         <nav className="sidebar-nav" aria-label="主要功能">
           <button
@@ -171,14 +194,7 @@ export default function App() {
           </button>
         </nav>
 
-        <Button className="new-chat-button" block onClick={handleNewSession}>新建研搜</Button>
-
-        <div className="sidebar-section">
-          <span className="sidebar-label">THREAD</span>
-          <strong className="thread-id" title={session.threadId}>
-            {session.threadId.slice(0, 8)}
-          </strong>
-        </div>
+        <Button className="new-chat-button" block onClick={handleNewSession}>＋ 新建研搜</Button>
 
         <div className="sidebar-status-list">
           <div className={`sidebar-status ${online ? "sidebar-status--online" : "sidebar-status--warn"}`}>
@@ -222,23 +238,26 @@ export default function App() {
         </div>
 
         <div className="sidebar-section sidebar-endpoints">
-          <span className="sidebar-label">ENDPOINTS</span>
-          <code>{API_BASE_URL}</code>
-          <code>{WS_BASE_URL}</code>
+          <span className="sidebar-label">SESSION · {session.threadId.slice(0, 8)}</span>
+          <code title={API_BASE_URL}>API connected</code>
+          <code title={WS_BASE_URL}>Realtime channel ready</code>
         </div>
       </aside>
 
       {activePage === "knowledge" ? <KnowledgeBasePage /> : <main className="chat-main">
         <header className="chat-topbar">
           <div>
-            <span className="panel-kicker">CHAT WORKSPACE</span>
-            <h2>深度研搜对话</h2>
+            <span className="panel-kicker">LIVE RESEARCH CANVAS</span>
+            <h2>{turns.length === 0 ? "从一个明确问题开始" : "研究任务现场"}</h2>
+            <p>{turns.length === 0 ? "描述目标，Agent 会规划路径、调用工具，并在同一处交付结果。" : "任务过程、工具调用和交付内容正在此处实时同步。"}</p>
           </div>
-          <div className={`run-indicator ${session.isRunning ? "run-indicator--live" : ""}`}>
-            {session.isRunning ? <BranchesOutlined aria-hidden /> : <CheckCircleOutlined aria-hidden />}
-            {session.isRunning ? "研搜中" : "待命"}
+          <div className="topbar-meta">
+            <span>THREAD</span>
+            <strong>{session.threadId.slice(0, 8)}</strong>
           </div>
         </header>
+
+        <AgentStateRibbon phase={agentPhase} />
 
         {session.lastError ? (
           <Alert

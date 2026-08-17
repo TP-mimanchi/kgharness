@@ -46,7 +46,7 @@ const TASK_EXAMPLES = [
     tool: "数据库查询工具",
     title: "药品库存排查",
     prompt:
-      "请请使用数据库查询工具，查询库存大于 100 的药品，按库存量升序列出药品名称、批次号、仓库位置和过期日期。",
+      "请使用数据库查询工具，查询库存大于 100 的药品，按库存量升序列出药品名称、批次号、仓库位置和过期日期。",
     icon: <DatabaseOutlined aria-hidden />,
   },
   {
@@ -319,7 +319,7 @@ function AssistantMessage({
 
   return (
     <article className="chat-message chat-message--assistant">
-      <div className="message-avatar">AI</div>
+      <div className="message-avatar">DS</div>
       <div className="message-bubble">
         <div className="message-meta">
           <span>DeepSearch Agents</span>
@@ -381,21 +381,22 @@ export function ConversationThread({
       <div className="conversation-empty">
         <div className="empty-examples">
           <div className="empty-examples-copy">
-            <span className="panel-kicker">TASK EXAMPLES</span>
-            <h3>选择一个工具任务开始</h3>
+            <span className="panel-kicker">STARTING POINTS</span>
+            <h3>也可以从这些路径开始</h3>
             <p>
-              每个示例会触发不同工具路径，执行轨迹和输出文件会直接出现在对话里。
+              选择一个任务作为草稿，再按你的实际目标调整。
             </p>
           </div>
 
           <div className="example-grid" aria-label="研搜任务示例">
-            {TASK_EXAMPLES.map((example) => (
+            {TASK_EXAMPLES.map((example, index) => (
               <button
                 className="example-card"
                 key={example.tool}
                 onClick={() => onUseExample(example.prompt)}
                 type="button"
               >
+                <span className="example-index">{String(index + 1).padStart(2, "0")}</span>
                 <span className="example-icon">{example.icon}</span>
                 <span className="example-copy">
                   <span>{example.tool}</span>
