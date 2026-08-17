@@ -17,6 +17,8 @@ import { Button, Tooltip } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { getDownloadUrl } from "../lib/api";
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import { AgentStateRibbon } from "./AgentStateRibbon";
+import type { AgentPhase } from "./AgentStateRibbon";
 import type { MonitorMessage, OutputFile } from "../types";
 
 export interface ChatTurn {
@@ -313,6 +315,14 @@ function AssistantMessage({
 
   const durationLabel = getThinkingDuration(events, timestamp, isRunning, now);
   const isCancelled = events.some((event) => event.event === "task_cancelled");
+  let agentPhase: AgentPhase = "listening";
+  if (!isRunning && result) {
+    agentPhase = "complete";
+  } else if (events.some((event) => event.event === "tool_start")) {
+    agentPhase = "executing";
+  } else if (events.length > 0) {
+    agentPhase = "thinking";
+  }
   const syncLabel = isRunning
     ? `生成中 · 思考 ${durationLabel}`
     : `${isCancelled ? "已取消" : "已同步"} · 用时 ${durationLabel}`;
@@ -325,6 +335,8 @@ function AssistantMessage({
           <span>DeepSearch Agents</span>
           <time>{syncLabel}</time>
         </div>
+
+        <AgentStateRibbon phase={agentPhase} />
 
         <details
           className="thinking-block"
@@ -379,6 +391,11 @@ export function ConversationThread({
   if (turns.length === 0) {
     return (
       <div className="conversation-empty">
+        <div className="empty-manifesto">
+          <span className="empty-ordinal">01 — RESEARCH CANVAS</span>
+          <h3>让复杂问题<br />在这里展开。</h3>
+          <p>输入目标。Agent 会检索、推演并交付可继续工作的结果。</p>
+        </div>
         <div className="empty-examples">
           <div className="empty-examples-copy">
             <span className="panel-kicker">STARTING POINTS</span>

@@ -75,7 +75,7 @@ output_dir.mkdir(exist_ok=True)
 updated_dir = project_root / "updated"
 updated_dir.mkdir(exist_ok=True)
 
-# 教学项目通常前后端分别本地启动，这里放开跨域以便 Vite 页面直接调用 API
+# 通常前后端分别本地启动，这里放开跨域以便 Vite 页面直接调用 API
 cors_origins = [
     origin.strip()
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173").split(",")

@@ -23,7 +23,7 @@ export function AgentStateRibbon({ phase }: AgentStateRibbonProps) {
     <section className={`agent-state-ribbon agent-state-ribbon--${phase}`} aria-label="Agent 实时状态">
       <div className="state-ribbon-heading">
         <span>AGENT PULSE</span>
-        <strong>{PHASES[activeIndex].label}中</strong>
+        <strong>{phase === "complete" ? "已完成" : `${PHASES[activeIndex].label}中`}</strong>
       </div>
       <ol className="state-phases">
         {PHASES.map((item, index) => {

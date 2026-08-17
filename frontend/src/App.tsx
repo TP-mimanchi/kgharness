@@ -14,8 +14,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChatComposer } from "./components/ChatComposer";
 import { ConversationThread } from "./components/ConversationThread";
 import { KnowledgeBasePage } from "./components/KnowledgeBasePage";
-import { AgentStateRibbon } from "./components/AgentStateRibbon";
-import type { AgentPhase } from "./components/AgentStateRibbon";
+import { ParticleField } from "./components/ParticleField";
 import type { ChatTurn } from "./components/ConversationThread";
 import { API_BASE_URL, WS_BASE_URL } from "./lib/config";
 import { useDeepAgentSession } from "./hooks/useDeepAgentSession";
@@ -147,14 +146,6 @@ export default function App() {
   }
 
   const online = session.connectionState === "connected";
-  const latestTurn = turns.at(-1);
-  let agentPhase: AgentPhase = "listening";
-  if (session.isRunning) {
-    agentPhase = session.stats.toolEvents > 0 ? "executing" : "thinking";
-  } else if (latestTurn && !latestTurn.isRunning && latestTurn.result) {
-    agentPhase = "complete";
-  }
-
   return (
     <div className="chat-app-shell min-h-dvh">
       <aside className="chat-sidebar" aria-label="会话信息">
@@ -245,19 +236,17 @@ export default function App() {
       </aside>
 
       {activePage === "knowledge" ? <KnowledgeBasePage /> : <main className="chat-main">
+        <ParticleField />
         <header className="chat-topbar">
           <div>
-            <span className="panel-kicker">LIVE RESEARCH CANVAS</span>
-            <h2>{turns.length === 0 ? "从一个明确问题开始" : "研究任务现场"}</h2>
-            <p>{turns.length === 0 ? "描述目标，Agent 会规划路径、调用工具，并在同一处交付结果。" : "任务过程、工具调用和交付内容正在此处实时同步。"}</p>
+            <span className="panel-kicker">DEEPSEARCH / LIVE</span>
+            <h2>研究工作台</h2>
           </div>
           <div className="topbar-meta">
             <span>THREAD</span>
             <strong>{session.threadId.slice(0, 8)}</strong>
           </div>
         </header>
-
-        <AgentStateRibbon phase={agentPhase} />
 
         {session.lastError ? (
           <Alert
