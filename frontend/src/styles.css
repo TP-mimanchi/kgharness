@@ -4885,6 +4885,202 @@ body {
   font-size: 9px;
 }
 
+.conversation-history {
+  border-top: 1px solid rgba(244, 238, 224, 0.11);
+  border-bottom: 1px solid rgba(244, 238, 224, 0.11);
+}
+
+.conversation-history summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px 16px;
+  align-items: center;
+  gap: 8px;
+  min-height: 58px;
+  color: #e4dacd;
+  cursor: pointer;
+  list-style: none;
+  padding: 7px 8px;
+}
+
+.conversation-history summary::-webkit-details-marker {
+  display: none;
+}
+
+.conversation-history summary:focus-visible {
+  outline: 1px solid #e85639;
+  outline-offset: -1px;
+}
+
+.conversation-history summary > span:first-child {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.conversation-history summary > span:first-child > .anticon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(244, 238, 224, 0.12);
+  border-radius: 50%;
+  color: #e85639;
+}
+
+.conversation-history summary small,
+.conversation-history summary strong {
+  display: block;
+}
+
+.conversation-history summary small {
+  color: #666159;
+  font-size: 7px;
+  letter-spacing: 0.14em;
+}
+
+.conversation-history summary strong {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.conversation-history summary em {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(232, 86, 57, 0.26);
+  border-radius: 50%;
+  color: #e85639;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.conversation-history-chevron {
+  color: #69635c;
+  font-size: 10px;
+  transition: transform 200ms ease;
+}
+
+.conversation-history[open] .conversation-history-chevron {
+  transform: rotate(180deg);
+}
+
+.conversation-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 6px 10px;
+  list-style: none;
+  animation: agent-list-open 220ms ease-out both;
+}
+
+.conversation-history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 2px;
+  border-radius: 9px;
+  border-top: 1px solid rgba(244, 238, 224, 0.075);
+}
+
+.conversation-history-item:hover {
+  background: rgba(244, 238, 224, 0.04);
+}
+
+.conversation-history-item--active {
+  background: rgba(232, 86, 57, 0.1);
+}
+
+.conversation-history-item--active:hover {
+  background: rgba(232, 86, 57, 0.14);
+}
+
+.conversation-history-select {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 44px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #bcb3a7;
+  cursor: pointer;
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.conversation-history-select .anticon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgba(244, 238, 224, 0.045);
+  color: #9c948a;
+}
+
+.conversation-history-select strong,
+.conversation-history-select small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-history-select strong {
+  color: #cfc6b9;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.conversation-history-item--active .conversation-history-select strong {
+  color: #e4dacd;
+}
+
+.conversation-history-select small {
+  margin-top: 2px;
+  color: #666159;
+  font-size: 9px;
+}
+
+.conversation-history-delete {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #666159;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms ease, background 150ms ease, color 150ms ease;
+}
+
+.conversation-history-item:hover .conversation-history-delete,
+.conversation-history-delete:focus-visible {
+  opacity: 1;
+}
+
+.conversation-history-delete:hover {
+  background: rgba(232, 86, 57, 0.14);
+  color: #e85639;
+}
+
+.conversation-history-empty {
+  margin: 0;
+  padding: 6px 14px 14px;
+  color: #666159;
+  font-size: 11px;
+}
+
 .sidebar-endpoints {
   width: auto;
   margin-top: auto;

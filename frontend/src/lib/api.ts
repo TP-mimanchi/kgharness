@@ -1,6 +1,9 @@
 import { API_BASE_URL, TENANT_ID } from "./config";
 import type {
   CancelTaskResponse,
+  ConversationListResponse,
+  ConversationMessagesResponse,
+  DeleteConversationResponse,
   FileListResponse,
   IngestionJob,
   KnowledgeBase,
@@ -76,6 +79,27 @@ export function getDownloadUrl(path: string): string {
   const url = new URL(apiUrl("/api/download"));
   url.searchParams.set("path", path);
   return url.toString();
+}
+
+export async function fetchConversations(): Promise<ConversationListResponse> {
+  return requestJson<ConversationListResponse>(apiUrl("/api/chats"));
+}
+
+export async function fetchConversationMessages(
+  conversationId: string
+): Promise<ConversationMessagesResponse> {
+  return requestJson<ConversationMessagesResponse>(
+    apiUrl(`/api/chats/${encodeURIComponent(conversationId)}/messages`)
+  );
+}
+
+export async function deleteConversation(
+  conversationId: string
+): Promise<DeleteConversationResponse> {
+  return requestJson<DeleteConversationResponse>(
+    apiUrl(`/api/chats/${encodeURIComponent(conversationId)}`),
+    { method: "DELETE" }
+  );
 }
 
 function ragHeaders(headers?: HeadersInit): Headers {

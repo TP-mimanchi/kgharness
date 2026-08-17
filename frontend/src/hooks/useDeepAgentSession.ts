@@ -46,20 +46,37 @@ export function useDeepAgentSession() {
     }
   }, []);
 
+  const switchToThread = useCallback(
+    (
+      nextThreadId: string,
+      seed?: {
+        events?: MonitorMessage[];
+        files?: OutputFile[];
+        result?: string;
+        isRunning?: boolean;
+        sessionPath?: string;
+      }
+    ) => {
+      storeThreadId(nextThreadId);
+      setThreadId(nextThreadId);
+      // 恢复历史会话时用该会话最后一轮的数据做种子：
+      // 后续文件轮询等触发的同步 effect 写回的是相同内容，不会覆盖恢复结果
+      setEvents(seed?.events ?? []);
+      setFiles(seed?.files ?? []);
+      setSessionPath(seed?.sessionPath ?? "");
+      setResult(seed?.result ?? "");
+      setLastError("");
+      setUploadedItems([]);
+      uploadedNameSetRef.current.clear();
+      setIsRunning(seed?.isRunning ?? false);
+      setIsCancelling(false);
+    },
+    []
+  );
+
   const resetSession = useCallback(() => {
-    const nextThreadId = createThreadId();
-    storeThreadId(nextThreadId);
-    setThreadId(nextThreadId);
-    setEvents([]);
-    setFiles([]);
-    setSessionPath("");
-    setResult("");
-    setLastError("");
-    setUploadedItems([]);
-    uploadedNameSetRef.current.clear();
-    setIsRunning(false);
-    setIsCancelling(false);
-  }, []);
+    switchToThread(createThreadId());
+  }, [switchToThread]);
 
   const refreshFiles = useCallback(async () => {
     if (!sessionPath) {
@@ -312,6 +329,7 @@ export function useDeepAgentSession() {
     stats,
     cancelCurrentTask,
     submitTask,
+    switchToThread,
     threadId,
     uploadFiles,
     uploadedItems

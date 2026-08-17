@@ -25,10 +25,14 @@ class ToolMonitor:
 
     _instance = None
 
+    # 单个 thread 最多缓存的监控事件数，超出丢弃最旧事件，防止长任务占用过多内存
+    BUFFER_LIMIT = 800
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(ToolMonitor, cls).__new__(cls)
             cls._instance.websocket_manager = None
+            cls._instance.buffers: dict[str, list[dict[str, Any]]] = {}
         return cls._instance
 
     def set_websocket_manager(self, manager: "ConnectionManager") -> None:
@@ -73,6 +77,14 @@ class ToolMonitor:
             except Exception:
                 pass
 
+        # 事件缓冲按 thread 保存，任务结束时由 server 层落库为历史会话记录
+        thread_id = get_thread_context()
+        if thread_id:
+            buffer = self.buffers.setdefault(thread_id, [])
+            buffer.append(payload)
+            if len(buffer) > self.BUFFER_LIMIT:
+                del buffer[: len(buffer) - self.BUFFER_LIMIT]
+
         # 控制台保底输出，便于无前端场景下观察执行过程
         print(f"\n[Monitor:{event_type}] {message}")
 
@@ -98,6 +110,15 @@ class ToolMonitor:
             current_loop.create_task(coroutine)
         else:
             asyncio.run_coroutine_threadsafe(coroutine, manager_loop)
+
+    def drain(self, thread_id: str) -> list[dict[str, Any]]:
+        """
+        取出并清空指定 thread 的监控事件缓冲。
+
+        任务结束后由 server 层调用，把本次执行的事件流写入历史会话记录；
+        取出后立即删除 key，避免长生命周期进程内存泄漏。
+        """
+        return self.buffers.pop(thread_id, [])
 
     def report_tool(
         self,

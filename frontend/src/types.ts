@@ -120,3 +120,33 @@ export interface RetrievalResponse {
   timings: { total_ms: number } & Record<string, number>;
   warnings: string[];
 }
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ChatMessageRecord {
+  id: string;
+  role: "user" | "assistant" | string;
+  content: string;
+  events: MonitorMessage[];
+  files: OutputFile[];
+  created_at: string;
+}
+
+export interface ConversationListResponse {
+  chats: ConversationSummary[];
+}
+
+export interface ConversationMessagesResponse {
+  messages: ChatMessageRecord[];
+}
+
+export interface DeleteConversationResponse {
+  status: "deleted" | string;
+  thread_id: string;
+}

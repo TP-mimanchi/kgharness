@@ -24,6 +24,7 @@ type AgentPhase = "listening" | "thinking" | "executing" | "complete";
 
 export interface ChatTurn {
   id: string;
+  threadId: string;
   content: string;
   events: MonitorMessage[];
   files: OutputFile[];

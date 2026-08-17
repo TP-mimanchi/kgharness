@@ -33,8 +33,15 @@ from app.agent.main_agent import (
     run_deep_agent,
     shutdown_main_agent,
 )
-from app.api.monitor import manager
+from app.api.chat_api import router as chat_router
+from app.api.monitor import manager, monitor
 from app.api.rag_api import router as rag_router
+from app.api.task_registry import active_tasks, forget_task
+from app.chat.db import (
+    database as chat_database,
+    initialize_chat_database,
+    shutdown_chat_database,
+)
 from app.rag.db import initialize_database, shutdown_database
 
 @asynccontextmanager
@@ -48,6 +55,7 @@ async def lifespan(_app: FastAPI):
     loop = asyncio.get_running_loop()
     manager.set_loop(loop)
     await initialize_database()
+    await initialize_chat_database()
     await initialize_main_agent()
     print(f"[Server] WebSocket Manager bound to loop: {id(loop)}")
     try:
@@ -55,6 +63,7 @@ async def lifespan(_app: FastAPI):
     finally:
         await shutdown_main_agent()
         await shutdown_database()
+        await shutdown_chat_database()
 
 
 # 当前文件位于 app/api/server.py，运行时目录统一收敛到 app 目录
@@ -63,9 +72,7 @@ project_root = current_dir.parent
 
 app = FastAPI(title="kgharness Enterprise Research API", lifespan=lifespan)
 app.include_router(rag_router)
-
-# 保存 thread_id -> 后台 Agent 任务，用于同一会话任务替换和主动取消
-active_tasks: dict[str, asyncio.Task] = {}
+app.include_router(chat_router)
 
 # output 保存每个会话最终工作区，前端只允许从这里浏览和下载生成文件
 output_dir = project_root / "output"
@@ -114,15 +121,89 @@ async def health():
     return {"status": "ok", "database": "ok"}
 
 
-def _forget_task(thread_id: str, task: asyncio.Task) -> None:
+def _scan_output_dir(path: str) -> List[dict]:
     """
-    清理已结束任务的登记关系。
+    扫描会话工作目录，返回与 /api/files 相同形状的文件元数据列表。
 
-    done_callback 触发时，active_tasks 中可能已经被新任务替换；只有仍是同一个
-    task 时才删除，避免误清理同 thread_id 下刚启动的新任务。
+    用于任务结束时把产物文件快照写入历史会话记录。
     """
-    if active_tasks.get(thread_id) is task:
-        active_tasks.pop(thread_id, None)
+    try:
+        abs_path = Path(path).resolve()
+        if not abs_path.is_relative_to(output_dir.resolve()):
+            return []
+    except Exception:
+        return []
+
+    if not abs_path.exists():
+        return []
+
+    files = []
+    for file_path in abs_path.rglob("*"):
+        if file_path.is_file():
+            stat = file_path.stat()
+            files.append(
+                {
+                    "name": file_path.name,
+                    "type": "file",
+                    "path": str(file_path),
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                }
+            )
+    files.sort(key=lambda x: x.get("mtime", 0), reverse=True)
+    return files
+
+
+def _extract_final_answer(events: list[dict]) -> str:
+    """从事件流中提取任务最终答案：优先 task_result，其次 task_cancelled，最后 error。"""
+    for event in reversed(events):
+        name = event.get("event")
+        if name == "task_result":
+            data = event.get("data") or {}
+            result = data.get("result")
+            if isinstance(result, str) and result:
+                return result
+            return event.get("message", "")
+        if name == "task_cancelled":
+            return event.get("message", "任务已取消")
+        if name == "error":
+            return event.get("message", "任务执行异常")
+    return ""
+
+
+async def _run_and_persist(query: str, thread_id: str) -> None:
+    """
+    执行 Agent 任务并在结束时把助手消息落库。
+
+    run_deep_agent 内部已捕获执行异常并上报 error 事件，这里只负责收尾：
+    从 monitor 事件缓冲中取本次执行的最终答案、事件流和产物文件快照，
+    写入 chat_messages。落库前检查会话是否仍存在，避免删除会话后任务
+    收尾时把会话"复活"。
+    """
+    try:
+        await run_deep_agent(query, thread_id)
+    finally:
+        events = monitor.drain(thread_id)
+        if not events:
+            return
+        if not await chat_database.conversation_exists(thread_id):
+            return
+        content = _extract_final_answer(events)
+        session_dir = ""
+        for event in events:
+            if event.get("event") == "session_created":
+                data = event.get("data") or {}
+                path = data.get("path")
+                if isinstance(path, str):
+                    session_dir = path
+        files = _scan_output_dir(session_dir) if session_dir else []
+        await chat_database.add_message(
+            thread_id,
+            "assistant",
+            content,
+            events=events,
+            files=files,
+        )
 
 
 @app.post("/api/task")
@@ -140,10 +221,14 @@ async def run_task(request: TaskRequest):
     if old_task and not old_task.done():
         old_task.cancel()
 
+    # 用户消息先落库，会话随第一条消息创建（懒创建，无空会话）
+    await chat_database.upsert_conversation(thread_id)
+    await chat_database.add_message(thread_id, "user", request.query)
+
     # create_task 把长耗时 Agent 执行交给事件循环，接口本身不用等待最终结果
-    task = asyncio.create_task(run_deep_agent(request.query, thread_id))
+    task = asyncio.create_task(_run_and_persist(request.query, thread_id))
     active_tasks[thread_id] = task
-    task.add_done_callback(lambda finished_task: _forget_task(thread_id, finished_task))
+    task.add_done_callback(lambda finished_task: forget_task(thread_id, finished_task))
 
     return {"status": "started", "thread_id": thread_id}
 
@@ -167,15 +252,15 @@ async def cancel_task(thread_id: str):
     try:
         await asyncio.wait_for(task, timeout=1.0)
     except asyncio.CancelledError:
-        _forget_task(thread_id, task)
+        forget_task(thread_id, task)
         return {"status": "cancelled", "thread_id": thread_id}
     except asyncio.TimeoutError:
         return {"status": "cancelling", "thread_id": thread_id}
     except Exception as e:
-        _forget_task(thread_id, task)
+        forget_task(thread_id, task)
         return {"status": "cancelled", "thread_id": thread_id, "message": str(e)}
 
-    _forget_task(thread_id, task)
+    forget_task(thread_id, task)
     return {"status": "cancelled", "thread_id": thread_id}
 
 

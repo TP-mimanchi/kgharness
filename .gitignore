@@ -70,5 +70,5 @@ docs
 .env.db
 docker/compose.db.yaml
 local-data
-
+.claude
 
