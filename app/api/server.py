@@ -34,7 +34,7 @@ from app.agent.main_agent import (
     shutdown_main_agent,
 )
 from app.api.monitor import manager
-from app.rag.api import router as rag_router
+from app.api.rag_api import router as rag_router
 from app.rag.db import initialize_database, shutdown_database
 
 @asynccontextmanager
