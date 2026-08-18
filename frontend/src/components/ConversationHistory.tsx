@@ -34,10 +34,7 @@ export function ConversationHistory({
       <summary>
         <span>
           <HistoryOutlined aria-hidden />
-          <span>
-            <small>HISTORY</small>
-            <strong>历史会话</strong>
-          </span>
+          <strong>历史会话</strong>
         </span>
         <em>{conversations.length}</em>
         <DownOutlined className="conversation-history-chevron" aria-hidden />

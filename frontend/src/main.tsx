@@ -10,29 +10,34 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <ConfigProvider
       theme={{
         token: {
-          colorPrimary: "#e85639",
-          colorSuccess: "#93a67a",
-          colorWarning: "#d3a56c",
-          colorError: "#e85639",
-          colorInfo: "#e85639",
-          colorBgBase: "#11100f",
-          colorBgContainer: "#1a1816",
-          colorTextBase: "#f4eee0",
-          colorBorder: "rgba(244, 238, 224, 0.14)",
-          borderRadius: 4,
+          colorPrimary: "#007aff",
+          colorSuccess: "#34c759",
+          colorWarning: "#ff9500",
+          colorError: "#ff3b30",
+          colorInfo: "#007aff",
+          colorBgBase: "#f2f2f7",
+          colorBgContainer: "#ffffff",
+          colorBgElevated: "#ffffff",
+          colorTextBase: "#1c1c1e",
+          colorBorder: "rgba(60, 60, 67, 0.14)",
+          borderRadius: 10,
+          boxShadowSecondary: "0 8px 32px rgba(0, 0, 0, 0.08)",
           fontFamily:
-            "'IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif",
+            '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "PingFang SC", "Segoe UI", "Microsoft YaHei", "Helvetica Neue", sans-serif',
           fontFamilyCode:
-            "'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace"
+            'ui-monospace, "SF Mono", "JetBrains Mono", "SFMono-Regular", Consolas, monospace'
         },
         components: {
           Button: {
             controlHeightLG: 46,
-            primaryShadow: "0 10px 30px rgba(232, 86, 57, 0.2)"
+            primaryShadow: "0 4px 16px rgba(0, 122, 255, 0.28)"
           },
           Input: {
-            activeBorderColor: "#e85639",
-            hoverBorderColor: "#e85639"
+            activeBorderColor: "#007aff",
+            hoverBorderColor: "#007aff"
+          },
+          Modal: {
+            borderRadiusLG: 22
           }
         }
       }}

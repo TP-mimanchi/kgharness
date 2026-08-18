@@ -16,6 +16,7 @@ import {
 } from "@ant-design/icons";
 import { Button, Tooltip } from "antd";
 import { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { getDownloadUrl } from "../lib/api";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import type { MonitorMessage, OutputFile } from "../types";
@@ -443,6 +444,7 @@ export function ConversationThread({
                 className="example-card"
                 key={example.tool}
                 onClick={() => onUseExample(example.prompt)}
+                style={{ "--i": index } as CSSProperties}
                 type="button"
               >
                 <span className="example-index">{String(index + 1).padStart(2, "0")}</span>
@@ -474,6 +476,9 @@ export function ConversationThread({
                 </time>
               </div>
               <p>{turn.content}</p>
+            </div>
+            <div className="message-avatar message-avatar--user" aria-hidden>
+              你
             </div>
           </article>
           <AssistantMessage
