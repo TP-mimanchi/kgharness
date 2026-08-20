@@ -100,10 +100,13 @@ class RAGDatabase:
                 locked_at timestamptz,
                 error_code text,
                 error_message text,
+                celery_task_id text,
                 created_at timestamptz NOT NULL DEFAULT now(),
                 updated_at timestamptz NOT NULL DEFAULT now()
             )
             """,
+            "ALTER TABLE rag_ingestion_jobs ADD COLUMN IF NOT EXISTS celery_task_id text",
+            "CREATE UNIQUE INDEX IF NOT EXISTS rag_jobs_celery_task_idx ON rag_ingestion_jobs (celery_task_id) WHERE celery_task_id IS NOT NULL",
             f"""
             CREATE TABLE IF NOT EXISTS rag_chunks (
                 id uuid PRIMARY KEY,
@@ -333,6 +336,51 @@ class RAGDatabase:
             ).fetchone()
             return dict(row) if row else None
 
+    async def get_job_by_id(self, job_id: UUID) -> dict[str, Any] | None:
+        """Worker-side lookup; tenant scope is already fixed by the queued job id."""
+        async with self.connection() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT * FROM rag_ingestion_jobs WHERE id = %s", (job_id,)
+                )
+            ).fetchone()
+            return dict(row) if row else None
+
+    async def set_job_task_id(self, job_id: UUID, task_id: str) -> None:
+        async with self.connection() as connection:
+            await connection.execute(
+                """
+                UPDATE rag_ingestion_jobs
+                SET celery_task_id = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                (task_id, job_id),
+            )
+
+    async def mark_job_dispatch_failed(self, job_id: UUID, error: Exception) -> None:
+        message = str(error)[:2000]
+        async with self.connection() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    """
+                    UPDATE rag_ingestion_jobs
+                    SET status = 'failed', stage = 'dispatch_failed',
+                        error_code = 'BROKER_UNAVAILABLE', error_message = %s,
+                        updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (message, job_id),
+                )
+                await connection.execute(
+                    """
+                    UPDATE rag_documents doc
+                    SET status = 'failed', error_message = %s, updated_at = now()
+                    FROM rag_ingestion_jobs job
+                    WHERE job.id = %s AND doc.id = job.document_id
+                    """,
+                    (message, job_id),
+                )
+
     async def retry_failed_job(
         self, tenant_id: UUID, job_id: UUID
     ) -> dict[str, Any] | None:
@@ -390,6 +438,33 @@ class RAGDatabase:
                         RETURNING job.*
                         """,
                         (worker_id,),
+                    )
+                ).fetchone()
+                return dict(row) if row else None
+
+    async def claim_job_by_id(
+        self, worker_id: str, job_id: UUID
+    ) -> dict[str, Any] | None:
+        """Atomically claim one broker-delivered job and reject stale duplicates."""
+        async with self.connection() as connection:
+            async with connection.transaction():
+                row = await (
+                    await connection.execute(
+                        """
+                        UPDATE rag_ingestion_jobs
+                        SET status = 'processing', stage = 'claimed', locked_by = %s,
+                            locked_at = now(), attempt = attempt + 1, updated_at = now()
+                        WHERE id = %s
+                          AND (
+                              status IN ('queued', 'retry')
+                              OR (
+                                  status = 'processing'
+                                  AND locked_at < now() - interval '30 minutes'
+                              )
+                          )
+                        RETURNING *
+                        """,
+                        (worker_id, job_id),
                     )
                 ).fetchone()
                 return dict(row) if row else None

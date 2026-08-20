@@ -13,6 +13,7 @@ from typing import Any, Optional
 from fastapi import WebSocket
 
 from app.api.context import get_thread_context
+from app.core.redis import publish_thread_event
 
 
 class ToolMonitor:
@@ -84,6 +85,12 @@ class ToolMonitor:
             buffer.append(payload)
             if len(buffer) > self.BUFFER_LIMIT:
                 del buffer[: len(buffer) - self.BUFFER_LIMIT]
+            # Redis Streams bridge worker processes and any number of API replicas.
+            # A broker outage must not hide the underlying Agent result or crash it.
+            try:
+                publish_thread_event(thread_id, payload)
+            except Exception as error:
+                print(f"[Monitor] Redis event publish failed: {error}")
 
         # 控制台保底输出，便于无前端场景下观察执行过程
         print(f"\n[Monitor:{event_type}] {message}")

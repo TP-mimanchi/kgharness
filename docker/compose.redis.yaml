@@ -1,0 +1,47 @@
+services:
+  redis:
+    image: ${REDIS_IMAGE:-redis:latest}
+    container_name: kgharness-redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command:
+      - redis-server
+      - --bind
+      - "0.0.0.0"
+      - --protected-mode
+      - "yes"
+      - --port
+      - "6379"
+      - --requirepass
+      - ${REDIS_PASSWORD}
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-512mb}
+      - --maxmemory-policy
+      - noeviction
+    ports:
+      # 与 compose.db.yaml 的 PostgreSQL 端口发布方式保持一致。
+      # 生产环境应在云安全组中只允许可信客户端访问 16379。
+      - "16379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: ${REDIS_CONTAINER_MEMORY:-640m}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+volumes:
+  redis-data:
+    name: kgharness-redis-data

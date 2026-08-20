@@ -11,8 +11,9 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 
-from app.api.task_registry import active_tasks, forget_task
 from app.chat.db import database
+from app.core.redis import clear_active_task, get_active_task
+from app.worker.celery_app import celery_app
 
 router = APIRouter(prefix="/api/chats", tags=["chat-history"])
 
@@ -31,17 +32,16 @@ async def _cancel_active_task(thread_id: str) -> None:
     取消后短暂等待协程响应；若底层同步调用阻塞，任务会稍后自行结束，
     其落库逻辑通过会话存在性检查避免把已删除的会话写回来。
     """
-    task = active_tasks.get(thread_id)
-    if not task or task.done():
-        active_tasks.pop(thread_id, None)
+    task_id = await get_active_task(thread_id)
+    if not task_id:
         return
-    task.cancel()
-    try:
-        await asyncio.wait_for(task, timeout=1.0)
-    except (asyncio.CancelledError, Exception):
-        # CancelledError 继承自 BaseException，需单独捕获；其余异常一并吞掉
-        pass
-    forget_task(thread_id, task)
+    await asyncio.to_thread(
+        celery_app.control.revoke,
+        task_id,
+        terminate=True,
+        signal="SIGTERM",
+    )
+    await clear_active_task(thread_id, task_id)
 
 
 @router.get("")

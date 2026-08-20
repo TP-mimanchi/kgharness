@@ -46,6 +46,7 @@ class IngestionJobView(BaseModel):
     progress: int
     error_code: str | None = None
     error_message: str | None = None
+    celery_task_id: str | None = None
     created_at: datetime
     updated_at: datetime
 

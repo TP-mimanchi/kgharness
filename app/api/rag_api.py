@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -24,8 +25,28 @@ from app.rag.schemas import (
     RetrievalRequest,
     RetrievalResponse,
 )
+from app.worker.celery_app import celery_app
 
 router = APIRouter(prefix="/api/v1", tags=["enterprise-rag"])
+
+
+async def _dispatch_ingestion(job_id: UUID) -> str:
+    """Publish only identifiers; document content remains in durable storage."""
+    task_id = str(uuid4())
+    await database.set_job_task_id(job_id, task_id)
+    try:
+        await asyncio.to_thread(
+            celery_app.send_task,
+            "kgharness.rag.ingest",
+            args=[str(job_id)],
+            task_id=task_id,
+        )
+    except Exception as error:
+        await database.mark_job_dispatch_failed(job_id, error)
+        raise HTTPException(
+            status_code=503, detail="task broker unavailable; ingestion was not queued"
+        ) from error
+    return task_id
 
 
 async def _tenant_id(x_tenant_id: str | None = Header(default=None)) -> UUID:
@@ -125,6 +146,8 @@ async def upload_knowledge_document(
         raise
     if not created:
         target_path.unlink(missing_ok=True)
+    else:
+        job["celery_task_id"] = await _dispatch_ingestion(job["id"])
     return {
         "created": created,
         "document": DocumentView.model_validate(document),
@@ -186,6 +209,7 @@ async def retry_ingestion_job(
         if not existing:
             raise HTTPException(status_code=404, detail="ingestion job not found")
         raise HTTPException(status_code=409, detail="only failed jobs can be retried")
+    row["celery_task_id"] = await _dispatch_ingestion(row["id"])
     return IngestionJobView.model_validate(row)
 
 

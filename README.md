@@ -23,13 +23,14 @@
 
 ```text
 用户任务
-  -> FastAPI 接口接收请求
-  -> run_deep_agent 创建会话目录并写入上下文
+  -> FastAPI 接口接收请求并发布 Celery 任务
+  -> Redis 将任务路由到独立 Agent / Ingestion 队列
+  -> Celery Worker 调用 run_deep_agent 创建会话目录并写入上下文
   -> 主智能体分析任务
   -> 分派给网络搜索助手 / 数据库查询助手 / RAGFlow 助手
   -> 主智能体汇总多来源信息
   -> 调用文件工具生成 Markdown / PDF
-  -> monitor 通过 WebSocket 推送进度
+  -> monitor 写入 Redis Stream，FastAPI 通过 WebSocket 回放并推送进度
   -> 前端展示事件、答案和文件列表
 ```
 
@@ -91,6 +92,7 @@
 | 私有知识库     | `RAGFlow` / `ragflow-sdk`                        | 为知识库助手提供内部文档问答能力                                              |
 | 文件处理       | `pypdf` / `python-docx` / `pandas` / `ReportLab` | 读取上传附件，生成 Markdown，转换 PDF                                         |
 | 后端接口       | `FastAPI` / `Uvicorn`                            | 提供任务、取消、上传、文件列表、下载和 WebSocket 接口                         |
+| 分布式任务     | `Celery` / `Redis`                               | Agent 与 RAG 摄取独立队列、任务状态、取消和短期事件流                          |
 | 实时通信       | `WebSocket`                                      | 推送工具调用、助手调用、最终结果和错误事件                                    |
 | 前端           | `React` / `Vite` / `Ant Design` / `Tailwind CSS` | 提供对话式研搜界面、事件流、附件上传和文件下载                                |
 | 依赖管理       | `uv` / `pnpm`                                    | 管理 Python 后端和前端依赖                                                    |
@@ -219,8 +221,15 @@ uv run uvicorn app.api.server:app --host 0.0.0.0 --port 8000 --reload
 | `GET /api/download`                 | 下载输出目录中的文件                   |
 | `WebSocket /ws/{thread_id}`         | 推送工具调用、助手调用、结果和异常事件 |
 
-### 8. 启动RAG Worker：
-python -m app.rag.worker
+### 8. 启动 Celery Worker
+
+```bash
+uv run celery -A app.worker.celery_app:celery_app worker --queues=agent --concurrency=1 --loglevel=INFO
+uv run celery -A app.worker.celery_app:celery_app worker --queues=ingestion --concurrency=2 --loglevel=INFO
+```
+
+完整企业化升级分析、参考项目与云端部署步骤见：
+[小型企业级 Agent + RAG 升级方案](docs/architecture/enterprise-agent-rag-upgrade.md)。
 
 ### 8. 启动前端
 
@@ -261,5 +270,4 @@ VITE_WS_BASE_URL=ws://localhost:8000
 ```text
 请先读取我上传的行业报告，再结合公开资料整理一份研究摘要。
 ```
-
 

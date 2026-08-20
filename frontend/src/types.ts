@@ -16,6 +16,7 @@ export interface MonitorMessage {
   message: string;
   data: Record<string, unknown>;
   timestamp: string;
+  event_id?: string;
 }
 
 export interface PongMessage {
@@ -28,6 +29,7 @@ export type SocketMessage = MonitorMessage | PongMessage;
 export interface TaskResponse {
   status: "started" | string;
   thread_id: string;
+  task_id?: string;
 }
 
 export interface CancelTaskResponse {
@@ -80,6 +82,7 @@ export interface IngestionJob {
   progress: number;
   error_code: string | null;
   error_message: string | null;
+  celery_task_id?: string | null;
   created_at: string;
   updated_at: string;
 }

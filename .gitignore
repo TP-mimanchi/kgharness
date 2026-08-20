@@ -64,11 +64,12 @@ testem.log
 # System Files
 .DS_Store
 Thumbs.db
-uv.lock
-
-docs
+# The Python lockfile and selected architecture documents are deployment inputs.
+docs/*
+!docs/architecture/
+docs/architecture/*
+!docs/architecture/enterprise-agent-rag-upgrade.md
 .env.db
 docker/compose.db.yaml
 local-data
 .claude
-

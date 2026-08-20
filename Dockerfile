@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 ARG PYPI_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+ARG UV_VERSION=0.11.2
 ENV UV_DEFAULT_INDEX=${PYPI_INDEX_URL}
-RUN pip install --no-cache-dir --index-url ${PYPI_INDEX_URL} uv==0.8.15
+RUN pip install --no-cache-dir --index-url ${PYPI_INDEX_URL} uv==${UV_VERSION}
 WORKDIR /workspace
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

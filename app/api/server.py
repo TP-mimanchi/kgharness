@@ -2,8 +2,8 @@
 FastAPI 接口层与项目闭环入口
 
 负责承接前端的任务提交、任务取消、文件上传/下载、输出文件列表查询和
-WebSocket 长连接。HTTP 接口只做轻量调度，真正的 DeepAgents 执行放到后台
-任务中；执行进度、工具调用和最终结果由 monitor 按 thread_id 推送给前端。
+WebSocket 长连接。HTTP 接口只做轻量调度，真正的 DeepAgents 执行由 Celery
+Worker 完成；执行进度经 Redis Stream 按 thread_id 回放并推送给前端。
 """
 
 import asyncio
@@ -23,47 +23,49 @@ from fastapi import (
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
+    status,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from app.agent.main_agent import (
-    initialize_main_agent,
-    run_deep_agent,
-    shutdown_main_agent,
-)
 from app.api.chat_api import router as chat_router
-from app.api.monitor import manager, monitor
+from app.api.monitor import manager
 from app.api.rag_api import router as rag_router
-from app.api.task_registry import active_tasks, forget_task
 from app.chat.db import (
     database as chat_database,
     initialize_chat_database,
     shutdown_chat_database,
 )
+from app.core.redis import (
+    clear_active_task,
+    get_active_task,
+    iter_thread_events,
+    redis_health,
+    set_active_task,
+)
+from app.core.config import task_queue_settings
 from app.rag.db import initialize_database, shutdown_database
+from app.worker.celery_app import celery_app
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     """
     服务生命周期入口。
 
-    启动时绑定当前事件循环到 WebSocket 管理器，确保后台 Agent 任务可以把
-    monitor 事件投递回 FastAPI 所在的 loop。
+    启动时绑定当前事件循环并初始化 API 自己使用的数据库连接池。
     """
     loop = asyncio.get_running_loop()
     manager.set_loop(loop)
     await initialize_database()
     await initialize_chat_database()
-    await initialize_main_agent()
     print(f"[Server] WebSocket Manager bound to loop: {id(loop)}")
     try:
         yield
     finally:
-        await shutdown_main_agent()
-        await shutdown_database()
         await shutdown_chat_database()
+        await shutdown_database()
 
 
 # 当前文件位于 app/api/server.py，运行时目录统一收敛到 app 目录
@@ -115,122 +117,99 @@ def _canonical_thread_id(value: str) -> str:
 async def health():
     from app.rag.db import database
 
-    healthy = await database.health()
-    if not healthy:
-        raise HTTPException(status_code=503, detail="database unavailable")
-    return {"status": "ok", "database": "ok"}
-
-
-def _scan_output_dir(path: str) -> List[dict]:
-    """
-    扫描会话工作目录，返回与 /api/files 相同形状的文件元数据列表。
-
-    用于任务结束时把产物文件快照写入历史会话记录。
-    """
-    try:
-        abs_path = Path(path).resolve()
-        if not abs_path.is_relative_to(output_dir.resolve()):
-            return []
-    except Exception:
-        return []
-
-    if not abs_path.exists():
-        return []
-
-    files = []
-    for file_path in abs_path.rglob("*"):
-        if file_path.is_file():
-            stat = file_path.stat()
-            files.append(
-                {
-                    "name": file_path.name,
-                    "type": "file",
-                    "path": str(file_path),
-                    "size": stat.st_size,
-                    "mtime": stat.st_mtime,
-                }
+    async def bounded(check) -> bool:
+        try:
+            return bool(
+                await asyncio.wait_for(
+                    check(),
+                    timeout=task_queue_settings.dependency_health_timeout_seconds,
+                )
             )
-    files.sort(key=lambda x: x.get("mtime", 0), reverse=True)
-    return files
+        except Exception:
+            return False
 
-
-def _extract_final_answer(events: list[dict]) -> str:
-    """从事件流中提取任务最终答案：优先 task_result，其次 task_cancelled，最后 error。"""
-    for event in reversed(events):
-        name = event.get("event")
-        if name == "task_result":
-            data = event.get("data") or {}
-            result = data.get("result")
-            if isinstance(result, str) and result:
-                return result
-            return event.get("message", "")
-        if name == "task_cancelled":
-            return event.get("message", "任务已取消")
-        if name == "error":
-            return event.get("message", "任务执行异常")
-    return ""
-
-
-async def _run_and_persist(query: str, thread_id: str) -> None:
-    """
-    执行 Agent 任务并在结束时把助手消息落库。
-
-    run_deep_agent 内部已捕获执行异常并上报 error 事件，这里只负责收尾：
-    从 monitor 事件缓冲中取本次执行的最终答案、事件流和产物文件快照，
-    写入 chat_messages。落库前检查会话是否仍存在，避免删除会话后任务
-    收尾时把会话"复活"。
-    """
-    try:
-        await run_deep_agent(query, thread_id)
-    finally:
-        events = monitor.drain(thread_id)
-        if not events:
-            return
-        if not await chat_database.conversation_exists(thread_id):
-            return
-        content = _extract_final_answer(events)
-        session_dir = ""
-        for event in events:
-            if event.get("event") == "session_created":
-                data = event.get("data") or {}
-                path = data.get("path")
-                if isinstance(path, str):
-                    session_dir = path
-        files = _scan_output_dir(session_dir) if session_dir else []
-        await chat_database.add_message(
-            thread_id,
-            "assistant",
-            content,
-            events=events,
-            files=files,
+    database_ok, redis_ok = await asyncio.gather(
+        bounded(database.health), bounded(redis_health)
+    )
+    if not database_ok or not redis_ok:
+        raise HTTPException(
+            status_code=503,
+            detail={"database": database_ok, "redis": redis_ok},
         )
+    return {"status": "ok", "database": "ok", "redis": "ok"}
 
 
-@app.post("/api/task")
+@app.post("/api/task", status_code=status.HTTP_202_ACCEPTED)
 async def run_task(request: TaskRequest):
     """
     启动一次 DeepAgents 后台任务。
 
-    HTTP 请求只负责创建后台协程并立即返回，后续执行轨迹、子智能体调用和最终
-    答案都会由 monitor 通过 `/ws/{thread_id}` 推送给同一会话的前端。
+    HTTP 请求只负责持久化用户消息并发布 Celery 任务，后续执行轨迹、子智能体
+    调用和最终答案通过 Redis Stream 与 `/ws/{thread_id}` 返回。
     """
     thread_id = _canonical_thread_id(request.thread_id) if request.thread_id else str(uuid.uuid4())
 
     # 同一个 thread_id 只保留一个活跃任务，新任务会先取消旧任务，避免并发写同一会话目录
-    old_task = active_tasks.get(thread_id)
-    if old_task and not old_task.done():
-        old_task.cancel()
+    old_task_id = await get_active_task(thread_id)
+    if old_task_id:
+        await asyncio.to_thread(
+            celery_app.control.revoke,
+            old_task_id,
+            terminate=True,
+            signal="SIGTERM",
+        )
 
     # 用户消息先落库，会话随第一条消息创建（懒创建，无空会话）
     await chat_database.upsert_conversation(thread_id)
     await chat_database.add_message(thread_id, "user", request.query)
 
-    # create_task 把长耗时 Agent 执行交给事件循环，接口本身不用等待最终结果
-    task = asyncio.create_task(_run_and_persist(request.query, thread_id))
-    active_tasks[thread_id] = task
-    task.add_done_callback(lambda finished_task: forget_task(thread_id, finished_task))
+    task_id = str(uuid.uuid4())
+    await set_active_task(thread_id, task_id)
+    try:
+        await asyncio.to_thread(
+            celery_app.send_task,
+            "kgharness.agent.execute",
+            args=[request.query, thread_id],
+            task_id=task_id,
+        )
+    except Exception as error:
+        await clear_active_task(thread_id, task_id)
+        raise HTTPException(status_code=503, detail="task broker unavailable") from error
 
-    return {"status": "started", "thread_id": thread_id}
+    return {"status": "queued", "thread_id": thread_id, "task_id": task_id}
+
+
+@app.get("/api/tasks/{task_id}")
+async def get_task_status(task_id: str):
+    """Expose Celery's durable result state without leaking backend details."""
+    try:
+        task_id = str(uuid.UUID(task_id))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="task_id 必须是合法 UUID") from error
+    result = celery_app.AsyncResult(task_id)
+    try:
+        state = await asyncio.wait_for(
+            asyncio.to_thread(lambda: result.state),
+            timeout=task_queue_settings.dependency_health_timeout_seconds,
+        )
+        response = {"task_id": task_id, "state": state.lower()}
+        if state == "SUCCESS":
+            response["result"] = await asyncio.wait_for(
+                asyncio.to_thread(lambda: result.result),
+                timeout=task_queue_settings.dependency_health_timeout_seconds,
+            )
+        elif state == "FAILURE":
+            response["error"] = str(
+                await asyncio.wait_for(
+                    asyncio.to_thread(lambda: result.result),
+                    timeout=task_queue_settings.dependency_health_timeout_seconds,
+                )
+            )
+    except Exception as error:
+        raise HTTPException(
+            status_code=503, detail="task result backend unavailable"
+        ) from error
+    return response
 
 
 @app.post("/api/task/{thread_id}/cancel")
@@ -238,30 +217,21 @@ async def cancel_task(thread_id: str):
     """
     取消指定 thread_id 对应的后台 Agent 任务。
 
-    注意：取消会向 asyncio.Task 注入 CancelledError。若底层第三方工具正在执行不可中断
-    的同步阻塞调用，任务可能需要等该调用返回后才会真正结束。
+    Celery 会先撤销排队任务；已运行任务通过 SIGTERM 终止所在 Worker 子进程，
+    主 Worker 随后补充新的子进程继续消费。
     """
     thread_id = _canonical_thread_id(thread_id)
-    task = active_tasks.get(thread_id)
-    if not task or task.done():
-        active_tasks.pop(thread_id, None)
+    task_id = await get_active_task(thread_id)
+    if not task_id:
         raise HTTPException(status_code=404, detail="任务不存在或已结束")
-
-    # 先发出取消信号，再短暂等待协程响应；若底层阻塞中，则返回 cancelling 给前端继续展示状态
-    task.cancel()
-    try:
-        await asyncio.wait_for(task, timeout=1.0)
-    except asyncio.CancelledError:
-        forget_task(thread_id, task)
-        return {"status": "cancelled", "thread_id": thread_id}
-    except asyncio.TimeoutError:
-        return {"status": "cancelling", "thread_id": thread_id}
-    except Exception as e:
-        forget_task(thread_id, task)
-        return {"status": "cancelled", "thread_id": thread_id, "message": str(e)}
-
-    forget_task(thread_id, task)
-    return {"status": "cancelled", "thread_id": thread_id}
+    await asyncio.to_thread(
+        celery_app.control.revoke,
+        task_id,
+        terminate=True,
+        signal="SIGTERM",
+    )
+    await clear_active_task(thread_id, task_id)
+    return {"status": "cancelled", "thread_id": thread_id, "task_id": task_id}
 
 
 @app.post("/api/upload")
@@ -416,6 +386,12 @@ async def websocket_endpoint(websocket: WebSocket, thread_id: str):
     # 连接建立后立即按 thread_id 注册，monitor 后续才能把事件定向推给当前页面
     await manager.connect(websocket, thread_id)
 
+    async def relay_events() -> None:
+        async for payload in iter_thread_events(thread_id):
+            await manager.send_to_thread(payload, thread_id)
+
+    relay_task = asyncio.create_task(relay_events())
+
     try:
         while True:
             # 前端通常发送 ping 心跳；服务端回复 pong，顺便维持连接活跃
@@ -432,6 +408,12 @@ async def websocket_endpoint(websocket: WebSocket, thread_id: str):
     except Exception as e:
         print(f"[WebSocket] 连接异常: {e}")
         manager.disconnect(websocket, thread_id)
+    finally:
+        relay_task.cancel()
+        try:
+            await relay_task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":

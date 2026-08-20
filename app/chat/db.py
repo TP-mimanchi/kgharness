@@ -7,32 +7,18 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
-from psycopg.rows import dict_row
-from psycopg_pool import AsyncConnectionPool
-
-from app.rag.config import settings
+from app.rag.db import RAGDatabase, database as rag_database
 
 
 class ChatDatabase:
-    def __init__(self) -> None:
-        self.pool = AsyncConnectionPool(
-            conninfo=settings.database_url,
-            min_size=1,
-            max_size=4,
-            open=False,
-            kwargs={"row_factory": dict_row},
-        )
+    """Chat repository backed by the process-wide PostgreSQL connection pool."""
 
-    async def open(self) -> None:
-        await self.pool.open()
-        await self.pool.wait()
-
-    async def close(self) -> None:
-        await self.pool.close()
+    def __init__(self, shared_database: RAGDatabase = rag_database) -> None:
+        self._shared_database = shared_database
 
     @asynccontextmanager
     async def connection(self) -> AsyncIterator[Any]:
-        async with self.pool.connection() as connection:
+        async with self._shared_database.connection() as connection:
             yield connection
 
     async def migrate(self) -> None:
@@ -189,9 +175,9 @@ database = ChatDatabase()
 
 
 async def initialize_chat_database() -> None:
-    await database.open()
     await database.migrate()
 
 
 async def shutdown_chat_database() -> None:
-    await database.close()
+    # The shared RAG database owns the process-wide connection pool lifecycle.
+    return None

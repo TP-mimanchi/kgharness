@@ -179,6 +179,8 @@ async def run_deep_agent(task_query, session_id):
     except Exception as e:
         # 异步执行异常也走 monitor，保证前端能收到明确错误事件
         monitor._emit("error", f"执行主智能发生异常信息：{str(e)}")
+        # 交给 Celery 标记 FAILURE；吞掉异常会让监控和任务状态相互矛盾。
+        raise
     finally:
         # 任务结束后恢复 ContextVar，避免后续请求复用到本次会话目录或 thread_id
         reset_session_context(session_dir_token, session_id_token)

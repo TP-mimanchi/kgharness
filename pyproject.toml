@@ -6,8 +6,10 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "alembic>=1.14.0",
     "aiofiles>=23.0.0",
+    "celery[redis]>=5.5.0,<6.0.0",
     "deepagents==0.5.7",
     "fastapi>=0.100.0",
+    "flower>=2.0.0,<3.0.0",
     "httpx>=0.27.0",
     "langchain==1.2.17",
     "langchain-community>=0.2.0",
@@ -32,6 +34,7 @@ dependencies = [
     "ragflow-sdk>=0.1.0",
     "reportlab>=4.0.0",
     "requests>=2.31.0",
+    "redis[hiredis]>=5.2.0,<7.0.0",
     "sqlalchemy>=2.0.0",
     "tavily-python==0.7.24",
     "typing-extensions>=4.5.0",
