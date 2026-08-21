@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, AnyMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
+from app.api.context import get_tenant_context
 from app.rag.config import settings
 from app.rag.retrieval import (
     build_retrieval_response,
@@ -58,7 +59,9 @@ def _parse_request(state: RAGState) -> dict[str, Any]:
         raise ValueError("RAG subgraph requires a non-empty query")
     return {
         "query": query,
-        "tenant_id": state.get("tenant_id", settings.default_tenant_id),
+        "tenant_id": state.get("tenant_id")
+        or get_tenant_context()
+        or settings.default_tenant_id,
         "knowledge_base_ids": state.get("knowledge_base_ids", []),
         "top_k": state.get("top_k", settings.final_top_k),
         "debug": state.get("debug", False),

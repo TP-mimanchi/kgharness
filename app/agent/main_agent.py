@@ -9,6 +9,7 @@ session_id 创建独立工作目录，并把工具调用、子智能体调用和
 import asyncio
 import shutil
 from pathlib import Path
+from typing import Any
 
 from deepagents import create_deep_agent
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -20,7 +21,9 @@ from app.agent.subagents.knowledge_base_agent import knowledge_base_agent
 from app.agent.subagents.network_search_agent import network_search_agent
 from app.api.context import (
     reset_session_context,
+    set_run_context,
     set_session_context,
+    set_tenant_context,
     set_thread_context,
 )
 from app.api.monitor import monitor
@@ -74,7 +77,40 @@ async def shutdown_main_agent() -> None:
 project_root_path = Path(__file__).parents[1].resolve()
 
 
-async def run_deep_agent(task_query, session_id):
+def _stream_content(message: Any) -> tuple[str, str]:
+    """Extract public text and provider-supplied reasoning summaries from a chunk."""
+    content = getattr(message, "content", "")
+    text_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = str(block.get("type", ""))
+            if block_type in {"text", "text_delta", "output_text"}:
+                value = block.get("text") or block.get("content")
+                if isinstance(value, str):
+                    text_parts.append(value)
+            elif block_type in {"reasoning", "reasoning_delta", "reasoning_content"}:
+                value = block.get("reasoning") or block.get("text") or block.get("content")
+                if isinstance(value, str):
+                    reasoning_parts.append(value)
+
+    additional = getattr(message, "additional_kwargs", {}) or {}
+    reasoning = additional.get("reasoning_content")
+    if isinstance(reasoning, str):
+        reasoning_parts.append(reasoning)
+    return "".join(text_parts), "".join(reasoning_parts)
+
+
+async def run_deep_agent(
+    task_query: str,
+    session_id: str,
+    run_id: str | None = None,
+    tenant_id: str | None = None,
+):
     """
     异步流式执行主智能体
 
@@ -83,7 +119,8 @@ async def run_deep_agent(task_query, session_id):
     :param task_query: 前端提交的原始任务问题
     :param session_id: 当前任务 ID，同时用于 thread_id、输出目录和 WebSocket 定向推送
     """
-    print(f"[MainAgent] 开始执行会话，session_id={session_id}")
+    run_id = run_id or session_id
+    print(f"[MainAgent] 开始执行会话，session_id={session_id}, run_id={run_id}")
 
     # 每个会话独立使用 output/session_{session_id}，避免不同用户的产物互相覆盖
     session_dir = project_root_path / "output" / f"session_{session_id}"
@@ -116,6 +153,8 @@ async def run_deep_agent(task_query, session_id):
     # ContextVar 让深层工具无需显式传参，也能拿到当前会话目录和 WebSocket thread_id
     session_dir_token = set_session_context(session_dir_str)
     session_id_token = set_thread_context(session_id)
+    run_id_token = set_run_context(run_id)
+    tenant_id_token = set_tenant_context(tenant_id or rag_settings.default_tenant_id)
 
     # 前端拿到工作目录后，可以展示本次任务生成的 Markdown/PDF 等产物
     monitor.report_session_dir(session_dir_str)
@@ -138,40 +177,72 @@ async def run_deep_agent(task_query, session_id):
 
     try:
         agent = await initialize_main_agent()
-        # astream 会持续产出模型节点、工具节点和子智能体节点的状态片段
-        async for chunk in agent.astream(
+        last_answer = ""
+        # messages 提供 token/content block 增量；updates 提供图节点状态变化。
+        async for stream_item in agent.astream(
             {"messages": [{"role": "user", "content": task_query + path_instruction}]},
             config=config,
+            stream_mode=["messages", "updates"],
         ):
-            # chunk 形如 {"model": {"messages": [...]}}，这里主要关心模型最新消息
+            if not isinstance(stream_item, tuple) or len(stream_item) != 2:
+                mode, chunk = "updates", stream_item
+            else:
+                mode, chunk = stream_item
+
+            if mode == "messages" and isinstance(chunk, tuple) and len(chunk) == 2:
+                message_chunk, metadata = chunk
+                text_delta, reasoning_delta = _stream_content(message_chunk)
+                node = metadata.get("langgraph_node") if isinstance(metadata, dict) else None
+                if text_delta and node in {None, "model"}:
+                    monitor.report_message_delta(
+                        text_delta,
+                        node=node,
+                        message_id=getattr(message_chunk, "id", None),
+                    )
+                if reasoning_delta and node in {None, "model"}:
+                    monitor.report_reasoning_delta(reasoning_delta, node=node)
+                continue
+
+            if mode != "updates" or not isinstance(chunk, dict):
+                continue
+
+            # update 形如 {"model": {"messages": [...]}}。
             for node_name, state in chunk.items():
+                monitor.report_node_completed(str(node_name))
                 if not state or "messages" not in state:
                     continue
                 messages = state["messages"]
                 if messages and isinstance(messages, list):
                     last_msg = messages[-1]
                     if node_name == "model":
-                        # 每个 model 节点对应一次主模型推理，供前端按当前对话独立计数
                         monitor.report_model()
-                        if last_msg.tool_calls:
+                        tool_calls = getattr(last_msg, "tool_calls", []) or []
+                        if tool_calls:
                             # DeepAgents 调用子智能体时，本质上会产生名为 task 的工具调用
-                            for tool_call in last_msg.tool_calls:
+                            for tool_call in tool_calls:
                                 if tool_call["name"] == "task":
-                                    # 子智能体调用单独上报，前端可以展示“正在调用哪个专家助手”
+                                    args = tool_call.get("args") or {}
                                     monitor.report_assistant(
-                                        tool_call["args"]["subagent_type"],
+                                        args.get("subagent_type", "unknown"),
                                         {
-                                            "description": tool_call["args"][
-                                                "description"
-                                            ]
+                                            "description": args.get("description", "")
                                         },
                                     )
-                        elif last_msg.content:
-                            # 模型没有继续调用工具时，最新文本内容就是本轮可反馈给前端的结果
-                            print(
-                                f"主智能体执行结果，最终结果：{last_msg.content[:100]}"
-                            )
-                            monitor.report_task_result(last_msg.content)
+                        else:
+                            content, _ = _stream_content(last_msg)
+                            if content:
+                                last_answer = content
+
+        if not last_answer:
+            snapshot = await agent.aget_state(config)
+            snapshot_messages = snapshot.values.get("messages", [])
+            if snapshot_messages:
+                last_answer, _ = _stream_content(snapshot_messages[-1])
+        if last_answer:
+            print(f"主智能体执行结果，最终结果：{last_answer[:100]}")
+            monitor.report_task_result(last_answer)
+        else:
+            raise RuntimeError("Agent run completed without a final assistant response")
 
     except asyncio.CancelledError:
         monitor.report_task_cancelled()
@@ -179,9 +250,15 @@ async def run_deep_agent(task_query, session_id):
     except Exception as e:
         # 异步执行异常也走 monitor，保证前端能收到明确错误事件
         monitor._emit("error", f"执行主智能发生异常信息：{str(e)}")
+        raise
     finally:
         # 任务结束后恢复 ContextVar，避免后续请求复用到本次会话目录或 thread_id
-        reset_session_context(session_dir_token, session_id_token)
+        reset_session_context(
+            session_dir_token,
+            session_id_token,
+            run_id_token,
+            tenant_id_token,
+        )
 
 
 if __name__ == "__main__":

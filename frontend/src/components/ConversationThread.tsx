@@ -21,7 +21,7 @@ import { getDownloadUrl } from "../lib/api";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import type { MonitorMessage, OutputFile } from "../types";
 
-type AgentPhase = "listening" | "thinking" | "executing" | "complete";
+type AgentPhase = "listening" | "planning" | "executing" | "complete";
 
 export interface ChatTurn {
   id: string;
@@ -152,6 +152,12 @@ function EventIcon({ event }: { event: string }) {
   if (event === "model_call") {
     return <RobotOutlined aria-hidden />;
   }
+  if (event === "run_queued" || event === "run_started") {
+    return <ClockCircleOutlined aria-hidden />;
+  }
+  if (event === "node_completed") {
+    return <BranchesOutlined aria-hidden />;
+  }
   if (event === "assistant_call") {
     return <BranchesOutlined aria-hidden />;
   }
@@ -162,6 +168,9 @@ function EventIcon({ event }: { event: string }) {
     return <FileSearchOutlined aria-hidden />;
   }
   if (event === "task_result") {
+    return <CheckCircleOutlined aria-hidden />;
+  }
+  if (event === "run_completed") {
     return <CheckCircleOutlined aria-hidden />;
   }
   if (event === "task_cancelled") {
@@ -273,7 +282,7 @@ function ArtifactShelf({ files }: { files: OutputFile[] }) {
 
 const PHASE_LABELS: Record<AgentPhase, string> = {
   listening: "正在聆听",
-  thinking: "正在思考",
+  planning: "正在规划",
   executing: "正在执行",
   complete: "已完成",
 };
@@ -288,7 +297,7 @@ function ThinkingLoader({ durationLabel, phase }: { durationLabel: string; phase
       <div className="loader-status">
         <span className="loader-pulse" aria-hidden />
         <strong>{PHASE_LABELS[phase]}</strong>
-        <span className="loader-duration">已思考 {durationLabel}</span>
+        <span className="loader-duration">已运行 {durationLabel}</span>
         <span className="loader-dots" aria-hidden>
           <i />
           <i />
@@ -344,17 +353,19 @@ function AssistantMessage({
   }, [isRunning]);
 
   const durationLabel = getThinkingDuration(events, timestamp, isRunning, now);
-  const isCancelled = events.some((event) => event.event === "task_cancelled");
+  const isCancelled = events.some(
+    (event) => event.event === "task_cancelled" || event.event === "run_cancelled"
+  );
   let agentPhase: AgentPhase = "listening";
   if (!isRunning && result) {
     agentPhase = "complete";
   } else if (events.some((event) => event.event === "tool_start")) {
     agentPhase = "executing";
   } else if (events.length > 0) {
-    agentPhase = "thinking";
+    agentPhase = "planning";
   }
   const syncLabel = isRunning
-    ? `生成中 · 思考 ${durationLabel}`
+    ? `生成中 · 运行 ${durationLabel}`
     : `${isCancelled ? "已取消" : "已同步"} · 用时 ${durationLabel}`;
 
   return (
@@ -373,7 +384,7 @@ function AssistantMessage({
           <summary>
             <span>
               <BranchesOutlined aria-hidden />
-              深度研搜过程
+              可审计执行过程
             </span>
             <strong>{events.length}</strong>
           </summary>
@@ -382,10 +393,13 @@ function AssistantMessage({
 
         {result ? (
           <div className="assistant-answer">
-            <div className="agent-completion-status" aria-label="Agent 已完成">
+            <div
+              className={`agent-completion-status ${isRunning ? "agent-completion-status--streaming" : ""}`}
+              aria-label={isRunning ? "Agent 正在流式生成" : "Agent 已完成"}
+            >
               <span aria-hidden />
-              <strong>已完成</strong>
-              <small>用时 {durationLabel}</small>
+              <strong>{isRunning ? "流式生成" : "已完成"}</strong>
+              <small>{isRunning ? "内容持续更新" : `用时 ${durationLabel}`}</small>
             </div>
             <MarkdownRenderer content={result} />
           </div>

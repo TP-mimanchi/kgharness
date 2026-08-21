@@ -1124,8 +1124,8 @@ textarea {
   }
 }
 
-.thinking-loader--thinking .loader-pulse,
-.thinking-loader--thinking .loader-dots i {
+.thinking-loader--planning .loader-pulse,
+.thinking-loader--planning .loader-dots i {
   background: var(--indigo);
 }
 
@@ -1201,6 +1201,25 @@ textarea {
 .agent-completion-status small {
   color: var(--faint);
   font-size: 11px;
+}
+
+.agent-completion-status--streaming > span {
+  background: var(--teal-deep);
+  box-shadow: 0 0 0 0 rgba(48, 176, 199, 0.35);
+  animation: stream-pulse 1.6s ease-out infinite;
+}
+
+.agent-completion-status--streaming strong {
+  color: var(--teal-deep);
+}
+
+@keyframes stream-pulse {
+  70% {
+    box-shadow: 0 0 0 7px rgba(48, 176, 199, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(48, 176, 199, 0);
+  }
 }
 
 .assistant-answer--pending {

@@ -6,6 +6,8 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from app.api import rag_api as api
+
 
 def _document_row(tenant_id, knowledge_base_id):
     document_id = uuid4()

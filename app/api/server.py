@@ -7,6 +7,7 @@ WebSocket 长连接。HTTP 接口只做轻量调度，真正的 DeepAgents 执�
 """
 
 import asyncio
+import json
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -19,30 +20,33 @@ from fastapi import (
     FastAPI,
     File,
     Form,
+    Header,
     HTTPException,
+    Request,
     UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.agent.main_agent import (
-    initialize_main_agent,
-    run_deep_agent,
-    shutdown_main_agent,
-)
+from app.agent.main_agent import initialize_main_agent, shutdown_main_agent
 from app.api.chat_api import router as chat_router
-from app.api.monitor import manager, monitor
+from app.api.monitor import manager
 from app.api.rag_api import router as rag_router
 from app.api.task_registry import active_tasks, forget_task
 from app.chat.db import (
+    ActiveRunExistsError,
     database as chat_database,
     initialize_chat_database,
     shutdown_chat_database,
 )
 from app.rag.db import initialize_database, shutdown_database
+from app.core.config import settings as execution_settings
+from app.core.redis import TERMINAL_RUN_STATUSES, broker
+from app.rag.config import settings as rag_settings
+from app.services.agent_execution import execute_run
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -56,12 +60,16 @@ async def lifespan(_app: FastAPI):
     manager.set_loop(loop)
     await initialize_database()
     await initialize_chat_database()
-    await initialize_main_agent()
+    await broker.connect(required=execution_settings.distributed)
+    if not execution_settings.distributed:
+        await initialize_main_agent()
     print(f"[Server] WebSocket Manager bound to loop: {id(loop)}")
     try:
         yield
     finally:
-        await shutdown_main_agent()
+        if not execution_settings.distributed:
+            await shutdown_main_agent()
+        await broker.close()
         await shutdown_database()
         await shutdown_chat_database()
 
@@ -116,98 +124,22 @@ async def health():
     from app.rag.db import database
 
     healthy = await database.health()
-    if not healthy:
-        raise HTTPException(status_code=503, detail="database unavailable")
-    return {"status": "ok", "database": "ok"}
-
-
-def _scan_output_dir(path: str) -> List[dict]:
-    """
-    扫描会话工作目录，返回与 /api/files 相同形状的文件元数据列表。
-
-    用于任务结束时把产物文件快照写入历史会话记录。
-    """
-    try:
-        abs_path = Path(path).resolve()
-        if not abs_path.is_relative_to(output_dir.resolve()):
-            return []
-    except Exception:
-        return []
-
-    if not abs_path.exists():
-        return []
-
-    files = []
-    for file_path in abs_path.rglob("*"):
-        if file_path.is_file():
-            stat = file_path.stat()
-            files.append(
-                {
-                    "name": file_path.name,
-                    "type": "file",
-                    "path": str(file_path),
-                    "size": stat.st_size,
-                    "mtime": stat.st_mtime,
-                }
-            )
-    files.sort(key=lambda x: x.get("mtime", 0), reverse=True)
-    return files
-
-
-def _extract_final_answer(events: list[dict]) -> str:
-    """从事件流中提取任务最终答案：优先 task_result，其次 task_cancelled，最后 error。"""
-    for event in reversed(events):
-        name = event.get("event")
-        if name == "task_result":
-            data = event.get("data") or {}
-            result = data.get("result")
-            if isinstance(result, str) and result:
-                return result
-            return event.get("message", "")
-        if name == "task_cancelled":
-            return event.get("message", "任务已取消")
-        if name == "error":
-            return event.get("message", "任务执行异常")
-    return ""
-
-
-async def _run_and_persist(query: str, thread_id: str) -> None:
-    """
-    执行 Agent 任务并在结束时把助手消息落库。
-
-    run_deep_agent 内部已捕获执行异常并上报 error 事件，这里只负责收尾：
-    从 monitor 事件缓冲中取本次执行的最终答案、事件流和产物文件快照，
-    写入 chat_messages。落库前检查会话是否仍存在，避免删除会话后任务
-    收尾时把会话"复活"。
-    """
-    try:
-        await run_deep_agent(query, thread_id)
-    finally:
-        events = monitor.drain(thread_id)
-        if not events:
-            return
-        if not await chat_database.conversation_exists(thread_id):
-            return
-        content = _extract_final_answer(events)
-        session_dir = ""
-        for event in events:
-            if event.get("event") == "session_created":
-                data = event.get("data") or {}
-                path = data.get("path")
-                if isinstance(path, str):
-                    session_dir = path
-        files = _scan_output_dir(session_dir) if session_dir else []
-        await chat_database.add_message(
-            thread_id,
-            "assistant",
-            content,
-            events=events,
-            files=files,
-        )
+    redis_healthy = await broker.health() if execution_settings.distributed else None
+    if not healthy or (execution_settings.distributed and not redis_healthy):
+        raise HTTPException(status_code=503, detail="database or Redis unavailable")
+    return {
+        "status": "ok",
+        "database": "ok",
+        "redis": "ok" if redis_healthy else ("disabled" if redis_healthy is None else "error"),
+        "execution_mode": execution_settings.mode,
+    }
 
 
 @app.post("/api/task")
-async def run_task(request: TaskRequest):
+async def run_task(
+    request: TaskRequest,
+    x_tenant_id: str | None = Header(default=None, alias="X-Tenant-ID"),
+):
     """
     启动一次 DeepAgents 后台任务。
 
@@ -215,22 +147,73 @@ async def run_task(request: TaskRequest):
     答案都会由 monitor 通过 `/ws/{thread_id}` 推送给同一会话的前端。
     """
     thread_id = _canonical_thread_id(request.thread_id) if request.thread_id else str(uuid.uuid4())
+    tenant_id = x_tenant_id or rag_settings.default_tenant_id
+    try:
+        tenant_id = str(uuid.UUID(tenant_id))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="X-Tenant-ID 必须是合法 UUID") from error
 
-    # 同一个 thread_id 只保留一个活跃任务，新任务会先取消旧任务，避免并发写同一会话目录
-    old_task = active_tasks.get(thread_id)
-    if old_task and not old_task.done():
-        old_task.cancel()
+    existing_run = await chat_database.get_active_run(thread_id)
+    if existing_run:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "该会话已有执行中的任务",
+                "run_id": str(existing_run["id"]),
+                "status": existing_run["status"],
+            },
+        )
 
-    # 用户消息先落库，会话随第一条消息创建（懒创建，无空会话）
-    await chat_database.upsert_conversation(thread_id)
-    await chat_database.add_message(thread_id, "user", request.query)
+    run_id = str(uuid.uuid4())
+    try:
+        # 会话、用户消息和 durable run 必须在同一事务中成功。
+        await chat_database.create_run_with_user_message(
+            run_id, thread_id, tenant_id, request.query
+        )
+    except ActiveRunExistsError as error:
+        active_run = await chat_database.get_active_run(thread_id)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "该会话已有执行中的任务",
+                "run_id": str(active_run["id"]) if active_run else None,
+                "status": active_run["status"] if active_run else "active",
+            },
+        ) from error
 
-    # create_task 把长耗时 Agent 执行交给事件循环，接口本身不用等待最终结果
-    task = asyncio.create_task(_run_and_persist(request.query, thread_id))
-    active_tasks[thread_id] = task
-    task.add_done_callback(lambda finished_task: forget_task(thread_id, finished_task))
+    if execution_settings.distributed:
+        try:
+            await broker.enqueue_run(
+                run_id=run_id,
+                thread_id=thread_id,
+                tenant_id=tenant_id,
+                query=request.query,
+            )
+        except Exception as error:
+            await chat_database.update_run_status(
+                run_id, "failed", error_message=f"dispatch failed: {error}"
+            )
+            raise HTTPException(status_code=503, detail="任务队列暂不可用") from error
+    else:
+        task = asyncio.create_task(
+            execute_run(
+                query=request.query,
+                thread_id=thread_id,
+                run_id=run_id,
+                worker_id="api-local",
+                tenant_id=tenant_id,
+            )
+        )
+        active_tasks[thread_id] = task
+        task.add_done_callback(lambda finished_task: forget_task(thread_id, finished_task))
 
-    return {"status": "started", "thread_id": thread_id}
+    return {
+        "status": "started",
+        "thread_id": thread_id,
+        "run_id": run_id,
+        "execution_mode": execution_settings.mode,
+        "events_url": f"/api/runs/{run_id}/events",
+    }
 
 
 @app.post("/api/task/{thread_id}/cancel")
@@ -242,6 +225,15 @@ async def cancel_task(thread_id: str):
     的同步阻塞调用，任务可能需要等该调用返回后才会真正结束。
     """
     thread_id = _canonical_thread_id(thread_id)
+    active_run = await chat_database.get_active_run(thread_id)
+    if not active_run:
+        raise HTTPException(status_code=404, detail="任务不存在或已结束")
+    run_id = str(active_run["id"])
+    if execution_settings.distributed:
+        await broker.request_cancel(run_id)
+        await chat_database.update_run_status(run_id, "cancelling")
+        return {"status": "cancelling", "thread_id": thread_id, "run_id": run_id}
+
     task = active_tasks.get(thread_id)
     if not task or task.done():
         active_tasks.pop(thread_id, None)
@@ -253,15 +245,91 @@ async def cancel_task(thread_id: str):
         await asyncio.wait_for(task, timeout=1.0)
     except asyncio.CancelledError:
         forget_task(thread_id, task)
-        return {"status": "cancelled", "thread_id": thread_id}
+        return {"status": "cancelled", "thread_id": thread_id, "run_id": run_id}
     except asyncio.TimeoutError:
-        return {"status": "cancelling", "thread_id": thread_id}
+        return {"status": "cancelling", "thread_id": thread_id, "run_id": run_id}
     except Exception as e:
         forget_task(thread_id, task)
-        return {"status": "cancelled", "thread_id": thread_id, "message": str(e)}
+        return {"status": "cancelled", "thread_id": thread_id, "run_id": run_id, "message": str(e)}
 
     forget_task(thread_id, task)
-    return {"status": "cancelled", "thread_id": thread_id}
+    return {"status": "cancelled", "thread_id": thread_id, "run_id": run_id}
+
+
+@app.get("/api/runs/{run_id}")
+async def get_run(run_id: str):
+    run_id = _canonical_thread_id(run_id)
+    run = await chat_database.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run 不存在")
+    return run
+
+
+@app.post("/api/runs/{run_id}/cancel")
+async def cancel_run(run_id: str):
+    run_id = _canonical_thread_id(run_id)
+    run = await chat_database.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run 不存在")
+    if run["status"] in TERMINAL_RUN_STATUSES:
+        raise HTTPException(status_code=409, detail="Run 已结束")
+    if execution_settings.distributed:
+        await broker.request_cancel(run_id)
+        await chat_database.update_run_status(run_id, "cancelling")
+        return {"status": "cancelling", "run_id": run_id, "thread_id": str(run["conversation_id"])}
+
+    thread_id = str(run["conversation_id"])
+    task = active_tasks.get(thread_id)
+    if not task or task.done():
+        raise HTTPException(status_code=404, detail="本地执行任务不存在或已结束")
+    task.cancel()
+    return {"status": "cancelling", "run_id": run_id, "thread_id": thread_id}
+
+
+@app.get("/api/runs/{run_id}/events")
+async def stream_run_events(
+    run_id: str,
+    request: Request,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+):
+    """Replay and follow a run's ordered Redis event stream using SSE."""
+    run_id = _canonical_thread_id(run_id)
+    run = await chat_database.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run 不存在")
+    if not execution_settings.distributed or not broker.enabled:
+        raise HTTPException(status_code=409, detail="SSE 事件流仅在 distributed 模式启用")
+
+    async def event_generator():
+        cursor = last_event_id or "0-0"
+        while not await request.is_disconnected():
+            events = await broker.read_events(run_id, cursor)
+            if events:
+                for event_id, payload in events:
+                    cursor = event_id
+                    yield f"id: {event_id}\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+                    if payload.get("event") in {
+                        "run_completed",
+                        "run_failed",
+                        "run_cancelled",
+                    }:
+                        return
+                continue
+
+            current = await chat_database.get_run(run_id)
+            if current and current["status"] in TERMINAL_RUN_STATUSES:
+                return
+            yield ": heartbeat\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/upload")

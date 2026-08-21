@@ -59,7 +59,7 @@ export function EventStream({ events }: EventStreamProps) {
       {events.length === 0 ? (
         <div className="empty-console">
           <Empty
-            description="等待 WebSocket 推送任务事件"
+            description="等待实时任务事件"
             image={Empty.PRESENTED_IMAGE_SIMPLE}
           />
         </div>

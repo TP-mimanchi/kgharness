@@ -54,7 +54,7 @@ function createTurn(content: string, threadId: string): ChatTurn {
 }
 
 // 数据库消息按 role 配对还原成 ChatTurn：user 开一轮，assistant 回填结果。
-// 末条 user 无配对 assistant 时保留 isRunning=true，后台任务后续事件会经 WebSocket 流入
+// 末条 user 无配对 assistant 时保留 isRunning=true，后台任务后续事件会经 SSE/WS 流入
 function buildTurns(messages: ChatMessageRecord[], threadId: string): ChatTurn[] {
   const turns: ChatTurn[] = [];
   for (const message of messages) {
@@ -320,7 +320,7 @@ export default function App() {
 
         <div className={`sidebar-status sidebar-status--connection ${online ? "sidebar-status--online" : ""}`}>
           <ApiOutlined aria-hidden />
-          <span>WebSocket</span>
+          <span>{session.transport === "sse" ? "SSE 事件流" : "本地通道"}</span>
           <strong>{connectionLabel(session.connectionState)}</strong>
         </div>
 
@@ -403,8 +403,8 @@ export default function App() {
             <h2>研究工作台</h2>
           </div>
           <div className="topbar-meta">
-            <span>THREAD</span>
-            <strong>{session.threadId.slice(0, 8)}</strong>
+            <span>{session.currentRunId ? "RUN" : "THREAD"}</span>
+            <strong>{(session.currentRunId || session.threadId).slice(0, 8)}</strong>
           </div>
         </header>
 

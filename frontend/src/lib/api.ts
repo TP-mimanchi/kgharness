@@ -39,9 +39,7 @@ async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit): Pro
 export async function startTask(query: string, threadId: string): Promise<TaskResponse> {
   return requestJson<TaskResponse>(apiUrl("/api/task"), {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
+    headers: ragHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       query,
       thread_id: threadId

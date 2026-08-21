@@ -12,7 +12,8 @@ from typing import Any, Optional
 
 from fastapi import WebSocket
 
-from app.api.context import get_thread_context
+from app.api.context import get_run_context, get_thread_context
+from app.core.redis import broker
 
 
 class ToolMonitor:
@@ -52,17 +53,20 @@ class ToolMonitor:
         :param message: 面向前端展示的事件说明
         :param data: 附加结构化数据
         """
+        thread_id = get_thread_context()
+        run_id = get_run_context() or thread_id
         payload = {
             "type": "monitor_event",
             "event": event_type,
             "message": message,
             "data": data or {},
-            "timestamp": datetime.datetime.now().isoformat(),
+            "run_id": run_id,
+            "thread_id": thread_id,
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         }
 
         if self.websocket_manager:
             try:
-                thread_id = get_thread_context()
                 manager_loop = self.websocket_manager.loop
 
                 if manager_loop and thread_id:
@@ -78,12 +82,16 @@ class ToolMonitor:
                 pass
 
         # 事件缓冲按 thread 保存，任务结束时由 server 层落库为历史会话记录
-        thread_id = get_thread_context()
-        if thread_id:
-            buffer = self.buffers.setdefault(thread_id, [])
+        buffer_key = run_id or thread_id
+        if buffer_key and event_type not in {"message_delta", "reasoning_delta"}:
+            buffer = self.buffers.setdefault(buffer_key, [])
             buffer.append(payload)
             if len(buffer) > self.BUFFER_LIMIT:
                 del buffer[: len(buffer) - self.BUFFER_LIMIT]
+
+        # Redis Stream is the cross-process source for replayable SSE delivery.
+        if run_id:
+            broker.publish_event_nowait(run_id, payload)
 
         # 控制台保底输出，便于无前端场景下观察执行过程
         print(f"\n[Monitor:{event_type}] {message}")
@@ -147,6 +155,36 @@ class ToolMonitor:
     def report_model(self) -> None:
         """报告主模型完成一次推理节点调用"""
         self._emit("model_call", "主模型完成一次推理")
+
+    def report_message_delta(
+        self,
+        delta: str,
+        *,
+        node: str | None = None,
+        message_id: str | None = None,
+    ) -> None:
+        """Report a user-visible model token/content delta."""
+        if not delta:
+            return
+        self._emit(
+            "message_delta",
+            "模型正在生成回答",
+            {"delta": delta, "node": node, "message_id": message_id},
+        )
+
+    def report_reasoning_delta(self, delta: str, *, node: str | None = None) -> None:
+        """Report provider-supplied reasoning summaries, never hidden chain-of-thought."""
+        if not delta:
+            return
+        self._emit(
+            "reasoning_delta",
+            "模型正在更新过程摘要",
+            {"delta": delta, "node": node},
+        )
+
+    def report_node_completed(self, node: str) -> None:
+        """Report a completed LangGraph node for the execution inspector."""
+        self._emit("node_completed", f"图节点执行完成: {node}", {"node": node})
 
     def report_task_result(self, result: str) -> None:
         """报告任务最终结果"""

@@ -24,6 +24,10 @@ export const API_BASE_URL = stripTrailingSlash(
   import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL
 );
 
+export function apiEventStreamUrl(path: string): string {
+  return `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 export const WS_BASE_URL = deriveWsBaseUrl(API_BASE_URL);
 
 export const TENANT_ID =

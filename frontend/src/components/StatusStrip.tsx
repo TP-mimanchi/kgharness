@@ -37,7 +37,7 @@ export function StatusStrip({ connectionState, isRunning, stats }: StatusStripPr
       <div className={`metric-tile ${online ? "metric-tile--online" : "metric-tile--warn"}`}>
         <ApiOutlined aria-hidden />
         <div>
-          <span>WebSocket</span>
+          <span>事件流</span>
           <strong>{connectionLabel(connectionState)}</strong>
         </div>
       </div>

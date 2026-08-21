@@ -18,6 +18,14 @@ _thread_id_ctx: ContextVar[Optional[str]] = ContextVar(
     "thread_id",
     default=None,
 )
+_run_id_ctx: ContextVar[Optional[str]] = ContextVar(
+    "run_id",
+    default=None,
+)
+_tenant_id_ctx: ContextVar[Optional[str]] = ContextVar(
+    "tenant_id",
+    default=None,
+)
 
 
 def set_session_context(path: str) -> Token[Optional[str]]:
@@ -58,9 +66,31 @@ def get_thread_context() -> Optional[str]:
     return _thread_id_ctx.get()
 
 
+def set_run_context(run_id: str) -> Token[Optional[str]]:
+    """Set the immutable execution id for the current request chain."""
+    return _run_id_ctx.set(run_id)
+
+
+def get_run_context() -> Optional[str]:
+    """Return the current execution id, distinct from the conversation thread id."""
+    return _run_id_ctx.get()
+
+
+def set_tenant_context(tenant_id: str) -> Token[Optional[str]]:
+    """Set the tenant boundary inherited by tools and nested RAG graphs."""
+    return _tenant_id_ctx.set(tenant_id)
+
+
+def get_tenant_context() -> Optional[str]:
+    """Return the tenant id for the current run, if one was provided."""
+    return _tenant_id_ctx.get()
+
+
 def reset_session_context(
     session_token: Token[Optional[str]],
     thread_token: Optional[Token[Optional[str]]] = None,
+    run_token: Optional[Token[Optional[str]]] = None,
+    tenant_token: Optional[Token[Optional[str]]] = None,
 ) -> None:
     """
     恢复请求上下文，避免本次任务信息残留到后续请求
@@ -71,3 +101,7 @@ def reset_session_context(
     _session_dir_ctx.reset(session_token)
     if thread_token is not None:
         _thread_id_ctx.reset(thread_token)
+    if run_token is not None:
+        _run_id_ctx.reset(run_token)
+    if tenant_token is not None:
+        _tenant_id_ctx.reset(tenant_token)

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cancelTask, listSessionFiles, startTask, uploadSessionFiles } from "../lib/api";
-import { WS_BASE_URL } from "../lib/config";
+import { apiEventStreamUrl, WS_BASE_URL } from "../lib/config";
 import { createThreadId, getStoredThreadId, storeThreadId } from "../lib/thread";
 import type {
   ConnectionState,
@@ -19,10 +19,13 @@ function extractString(data: Record<string, unknown>, key: string): string | nul
 
 export function useDeepAgentSession() {
   const socketRef = useRef<WebSocket | null>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimerRef = useRef<number | undefined>(undefined);
   const heartbeatTimerRef = useRef<number | undefined>(undefined);
   const uploadedNameSetRef = useRef<Set<string>>(new Set());
   const [threadId, setThreadId] = useState(getStoredThreadId);
+  const [currentRunId, setCurrentRunId] = useState("");
+  const [transport, setTransport] = useState<"websocket" | "sse">("websocket");
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [events, setEvents] = useState<MonitorMessage[]>([]);
   const [files, setFiles] = useState<OutputFile[]>([]);
@@ -59,6 +62,9 @@ export function useDeepAgentSession() {
     ) => {
       storeThreadId(nextThreadId);
       setThreadId(nextThreadId);
+      eventSourceRef.current?.close();
+      setCurrentRunId("");
+      setTransport("websocket");
       // 恢复历史会话时用该会话最后一轮的数据做种子：
       // 后续文件轮询等触发的同步 effect 写回的是相同内容，不会覆盖恢复结果
       setEvents(seed?.events ?? []);
@@ -90,7 +96,58 @@ export function useDeepAgentSession() {
     setFiles(response.files || []);
   }, [sessionPath]);
 
+  const processMonitorEvent = useCallback((payload: MonitorMessage) => {
+    setLastPongAt(new Date().toISOString());
+
+    if (payload.event === "message_delta") {
+      const delta = extractString(payload.data, "delta");
+      if (delta) {
+        setResult((previous) => previous + delta);
+      }
+      return;
+    }
+
+    // Reasoning deltas are intentionally not rendered as hidden chain-of-thought.
+    // The timeline receives only auditable lifecycle summaries and tool activity.
+    if (payload.event !== "reasoning_delta") {
+      setEvents((previous) => [...previous, payload].slice(-MAX_EVENTS));
+    }
+
+    if (payload.event === "session_created") {
+      const path = extractString(payload.data, "path");
+      if (path) {
+        setSessionPath(path);
+      }
+    }
+
+    if (payload.event === "task_result") {
+      const finalResult = extractString(payload.data, "result");
+      setResult(finalResult || payload.message);
+    }
+
+    if (payload.event === "task_cancelled" || payload.event === "run_cancelled") {
+      setResult((previous) => previous || payload.message);
+      setIsRunning(false);
+      setIsCancelling(false);
+    }
+
+    if (payload.event === "error" || payload.event === "run_failed") {
+      const detail = extractString(payload.data, "error");
+      setLastError(detail || payload.message);
+      setIsRunning(false);
+      setIsCancelling(false);
+    }
+
+    if (payload.event === "run_completed") {
+      setIsRunning(false);
+      setIsCancelling(false);
+    }
+  }, []);
+
   useEffect(() => {
+    if (currentRunId) {
+      return;
+    }
     let disposed = false;
 
     function connect() {
@@ -130,33 +187,7 @@ export function useDeepAgentSession() {
             return;
           }
 
-          setEvents((previous) => [...previous, payload].slice(-MAX_EVENTS));
-
-          if (payload.event === "session_created") {
-            const path = extractString(payload.data, "path");
-            if (path) {
-              setSessionPath(path);
-            }
-          }
-
-          if (payload.event === "task_result") {
-            const finalResult = extractString(payload.data, "result");
-            setResult(finalResult || payload.message);
-            setIsRunning(false);
-            setIsCancelling(false);
-          }
-
-          if (payload.event === "task_cancelled") {
-            setResult((previous) => previous || payload.message);
-            setIsRunning(false);
-            setIsCancelling(false);
-          }
-
-          if (payload.event === "error") {
-            setLastError(payload.message);
-            setIsRunning(false);
-            setIsCancelling(false);
-          }
+          processMonitorEvent(payload);
         } catch (error) {
           setLastError(error instanceof Error ? error.message : "WebSocket 消息解析失败");
         }
@@ -189,7 +220,53 @@ export function useDeepAgentSession() {
       clearSocketTimers();
       socketRef.current?.close();
     };
-  }, [clearSocketTimers, threadId]);
+  }, [clearSocketTimers, currentRunId, processMonitorEvent, threadId]);
+
+  useEffect(() => {
+    if (!currentRunId) {
+      return;
+    }
+
+    clearSocketTimers();
+    socketRef.current?.close();
+    setTransport("sse");
+    setConnectionState("connecting");
+    const source = new EventSource(
+      apiEventStreamUrl(`/api/runs/${encodeURIComponent(currentRunId)}/events`)
+    );
+    eventSourceRef.current = source;
+
+    source.onopen = () => {
+      setConnectionState("connected");
+      setLastError("");
+    };
+    source.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as MonitorMessage;
+        processMonitorEvent(payload);
+        if (["run_completed", "run_failed", "run_cancelled"].includes(payload.event)) {
+          source.close();
+          setConnectionState("closed");
+        }
+      } catch (error) {
+        setLastError(error instanceof Error ? error.message : "SSE 消息解析失败");
+      }
+    };
+    source.onerror = () => {
+      if (source.readyState === EventSource.CLOSED) {
+        setConnectionState("closed");
+      } else {
+        setConnectionState("reconnecting");
+      }
+    };
+
+    return () => {
+      source.close();
+      if (eventSourceRef.current === source) {
+        eventSourceRef.current = null;
+      }
+    };
+  }, [clearSocketTimers, currentRunId, processMonitorEvent]);
 
   useEffect(() => {
     if (!sessionPath) {
@@ -226,6 +303,10 @@ export function useDeepAgentSession() {
         if (response.thread_id && response.thread_id !== threadId) {
           storeThreadId(response.thread_id);
           setThreadId(response.thread_id);
+        }
+        if (response.execution_mode === "distributed") {
+          setCurrentRunId(response.run_id);
+          setTransport("sse");
         }
         return response;
       } catch (error) {
@@ -315,6 +396,7 @@ export function useDeepAgentSession() {
 
   return {
     connectionState,
+    currentRunId,
     events,
     files,
     isCancelling,
@@ -331,6 +413,7 @@ export function useDeepAgentSession() {
     submitTask,
     switchToThread,
     threadId,
+    transport,
     uploadFiles,
     uploadedItems
   };

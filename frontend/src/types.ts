@@ -15,6 +15,8 @@ export interface MonitorMessage {
   event: MonitorEventName;
   message: string;
   data: Record<string, unknown>;
+  run_id?: string | null;
+  thread_id?: string | null;
   timestamp: string;
 }
 
@@ -28,11 +30,15 @@ export type SocketMessage = MonitorMessage | PongMessage;
 export interface TaskResponse {
   status: "started" | string;
   thread_id: string;
+  run_id: string;
+  execution_mode: "local" | "distributed" | string;
+  events_url: string;
 }
 
 export interface CancelTaskResponse {
   status: "cancelled" | "cancelling" | string;
   thread_id: string;
+  run_id?: string;
   message?: string;
 }
 

@@ -64,11 +64,12 @@ testem.log
 # System Files
 .DS_Store
 Thumbs.db
-uv.lock
+!uv.lock
 
-docs
+# Keep local reference material private, but version the deployable architecture.
+docs/*
+!docs/enterprise-architecture.md
 .env.db
 docker/compose.db.yaml
 local-data
 .claude
-

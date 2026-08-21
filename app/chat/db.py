@@ -8,9 +8,14 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 from psycopg.rows import dict_row
+from psycopg.errors import UniqueViolation
 from psycopg_pool import AsyncConnectionPool
 
 from app.rag.config import settings
+
+
+class ActiveRunExistsError(RuntimeError):
+    """Raised when a conversation already owns a non-terminal run."""
 
 
 class ChatDatabase:
@@ -58,6 +63,24 @@ class ChatDatabase:
             )
             """,
             "CREATE INDEX IF NOT EXISTS chat_messages_conv_idx ON chat_messages (conversation_id, created_at)",
+            """
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                id uuid PRIMARY KEY,
+                conversation_id uuid NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+                tenant_id uuid NOT NULL,
+                query text NOT NULL,
+                status text NOT NULL,
+                worker_id text,
+                error_message text,
+                created_at timestamptz NOT NULL DEFAULT now(),
+                started_at timestamptz,
+                completed_at timestamptz,
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS agent_runs_conversation_idx ON agent_runs (conversation_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS agent_runs_active_idx ON agent_runs (conversation_id, status) WHERE status IN ('queued', 'running', 'cancelling')",
+            "CREATE UNIQUE INDEX IF NOT EXISTS agent_runs_one_active_per_conversation ON agent_runs (conversation_id) WHERE status IN ('queued', 'running', 'cancelling')",
         ]
         async with self.connection() as connection:
             async with connection.transaction():
@@ -130,6 +153,167 @@ class ChatDatabase:
                     "UPDATE chat_conversations SET updated_at = now() WHERE id = %s",
                     (conversation_id,),
                 )
+
+    async def create_run(
+        self,
+        run_id: str,
+        conversation_id: str,
+        tenant_id: str,
+        query: str,
+    ) -> dict[str, Any]:
+        """Persist the durable business record before dispatching work to Redis."""
+        try:
+            async with self.connection() as connection:
+                row = await (
+                    await connection.execute(
+                        """
+                        INSERT INTO agent_runs (id, conversation_id, tenant_id, query, status)
+                        VALUES (%s, %s, %s, %s, 'queued')
+                        RETURNING *
+                        """,
+                        (run_id, conversation_id, tenant_id, query),
+                    )
+                ).fetchone()
+                return dict(row)
+        except UniqueViolation as error:
+            if error.diag.constraint_name == "agent_runs_one_active_per_conversation":
+                raise ActiveRunExistsError(conversation_id) from error
+            raise
+
+    async def create_run_with_user_message(
+        self,
+        run_id: str,
+        conversation_id: str,
+        tenant_id: str,
+        query: str,
+    ) -> dict[str, Any]:
+        """Atomically create the conversation, user message, and queued run."""
+        message_id = uuid4()
+        try:
+            async with self.connection() as connection:
+                async with connection.transaction():
+                    await connection.execute(
+                        """
+                        INSERT INTO chat_conversations (id)
+                        VALUES (%s)
+                        ON CONFLICT (id) DO NOTHING
+                        """,
+                        (conversation_id,),
+                    )
+                    row = await (
+                        await connection.execute(
+                            """
+                            INSERT INTO agent_runs (
+                                id, conversation_id, tenant_id, query, status
+                            )
+                            VALUES (%s, %s, %s, %s, 'queued')
+                            RETURNING *
+                            """,
+                            (run_id, conversation_id, tenant_id, query),
+                        )
+                    ).fetchone()
+                    await connection.execute(
+                        """
+                        UPDATE chat_conversations
+                        SET title = left(%s, 40), updated_at = now()
+                        WHERE id = %s
+                          AND NOT EXISTS (
+                              SELECT 1 FROM chat_messages
+                              WHERE conversation_id = %s AND role = 'user'
+                          )
+                        """,
+                        (query, conversation_id, conversation_id),
+                    )
+                    await connection.execute(
+                        """
+                        INSERT INTO chat_messages (
+                            id, conversation_id, role, content, events, files
+                        )
+                        VALUES (%s, %s, 'user', %s, '[]'::jsonb, '[]'::jsonb)
+                        """,
+                        (message_id, conversation_id, query),
+                    )
+                    return dict(row)
+        except UniqueViolation as error:
+            if error.diag.constraint_name == "agent_runs_one_active_per_conversation":
+                raise ActiveRunExistsError(conversation_id) from error
+            raise
+
+    async def update_run_status(
+        self,
+        run_id: str,
+        status: str,
+        *,
+        worker_id: str | None = None,
+        error_message: str | None = None,
+    ) -> bool:
+        """Update lifecycle timestamps without moving business truth into Redis."""
+        async with self.connection() as connection:
+            row = await (
+                await connection.execute(
+                """
+                UPDATE agent_runs
+                SET status = %s,
+                    worker_id = COALESCE(%s, worker_id),
+                    error_message = COALESCE(%s, error_message),
+                    started_at = CASE
+                        WHEN %s = 'running' THEN COALESCE(started_at, now())
+                        ELSE started_at
+                    END,
+                    completed_at = CASE
+                        WHEN %s IN ('completed', 'failed', 'cancelled') THEN now()
+                        ELSE completed_at
+                    END,
+                    updated_at = now()
+                WHERE id = %s
+                  AND (
+                    (%s = 'running' AND status = 'queued')
+                    OR (%s = 'cancelling' AND status IN ('queued', 'running', 'cancelling'))
+                    OR (%s IN ('completed', 'failed', 'cancelled')
+                        AND status IN ('queued', 'running', 'cancelling'))
+                  )
+                RETURNING id
+                """,
+                (
+                    status,
+                    worker_id,
+                    error_message,
+                    status,
+                    status,
+                    run_id,
+                    status,
+                    status,
+                    status,
+                ),
+            )
+            ).fetchone()
+            return row is not None
+
+    async def get_run(self, run_id: str) -> dict[str, Any] | None:
+        async with self.connection() as connection:
+            row = await (
+                await connection.execute(
+                    "SELECT * FROM agent_runs WHERE id = %s",
+                    (run_id,),
+                )
+            ).fetchone()
+            return dict(row) if row else None
+
+    async def get_active_run(self, conversation_id: str) -> dict[str, Any] | None:
+        async with self.connection() as connection:
+            row = await (
+                await connection.execute(
+                    """
+                    SELECT * FROM agent_runs
+                    WHERE conversation_id = %s
+                      AND status IN ('queued', 'running', 'cancelling')
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (conversation_id,),
+                )
+            ).fetchone()
+            return dict(row) if row else None
 
     async def list_conversations(self) -> list[dict[str, Any]]:
         async with self.connection() as connection:
