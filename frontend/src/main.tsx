@@ -10,11 +10,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <ConfigProvider
       theme={{
         token: {
-          colorPrimary: "#007aff",
+          colorPrimary: "#6f5cff",
           colorSuccess: "#34c759",
           colorWarning: "#ff9500",
           colorError: "#ff3b30",
-          colorInfo: "#007aff",
+          colorInfo: "#6f5cff",
           colorBgBase: "#f2f2f7",
           colorBgContainer: "#ffffff",
           colorBgElevated: "#ffffff",

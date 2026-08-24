@@ -27,13 +27,13 @@ export function MissionComposer({
       <div className="panel-heading">
         <div>
           <span className="panel-kicker">MISSION INPUT</span>
-          <h2 id="composer-title">发起研搜任务</h2>
+          <h2 id="composer-title">发起 KG 任务</h2>
         </div>
         <ThunderboltOutlined className="panel-heading-icon" aria-hidden />
       </div>
 
       <TextArea
-        aria-label="研搜任务"
+        aria-label="KG 任务"
         className="mission-textarea"
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}

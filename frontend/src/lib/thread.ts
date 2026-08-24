@@ -1,4 +1,5 @@
-const STORAGE_KEY = "deepsearch.thread_id";
+const STORAGE_KEY = "kg.thread_id";
+const LEGACY_STORAGE_KEY = "deepsearch.thread_id";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -40,8 +41,10 @@ export function createThreadId(): string {
 }
 
 export function getStoredThreadId(): string {
-  const existing = window.localStorage.getItem(STORAGE_KEY);
+  const existing = window.localStorage.getItem(STORAGE_KEY) || window.localStorage.getItem(LEGACY_STORAGE_KEY);
   if (isValidThreadId(existing)) {
+    window.localStorage.setItem(STORAGE_KEY, existing);
+    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
     return existing;
   }
 

@@ -290,7 +290,7 @@ export function useDeepAgentSession() {
     async (query: string) => {
       const cleanQuery = query.trim();
       if (!cleanQuery) {
-        throw new Error("请输入研搜任务");
+        throw new Error("请输入 KG 任务");
       }
 
       setIsRunning(true);

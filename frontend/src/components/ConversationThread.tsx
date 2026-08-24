@@ -370,10 +370,10 @@ function AssistantMessage({
 
   return (
     <article className="chat-message chat-message--assistant">
-      <div className="message-avatar">DS</div>
+      <div className="message-avatar">TP</div>
       <div className="message-bubble">
         <div className="message-meta">
-          <span>DeepSearch Agents</span>
+          <span>TP · KG Agent</span>
           <time>{syncLabel}</time>
         </div>
 
@@ -439,9 +439,9 @@ export function ConversationThread({
     return (
       <div className="conversation-empty">
         <div className="empty-manifesto">
-          <span className="empty-ordinal">01 — RESEARCH CANVAS</span>
-          <h3>让复杂问题<br />在这里展开。</h3>
-          <p>输入目标。Agent 会检索、推演并交付可继续工作的结果。</p>
+          <span className="empty-ordinal">01 — KNOWLEDGE CANVAS</span>
+          <h3>让知识连接，<br />让答案浮现。</h3>
+          <p>输入目标。KG Agent 会检索、关联并交付可追溯的结果。</p>
         </div>
         <div className="empty-examples">
           <div className="empty-examples-copy">
@@ -452,7 +452,7 @@ export function ConversationThread({
             </p>
           </div>
 
-          <div className="example-grid" aria-label="研搜任务示例">
+          <div className="example-grid" aria-label="KG 任务示例">
             {TASK_EXAMPLES.map((example, index) => (
               <button
                 className="example-card"

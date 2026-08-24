@@ -1,6 +1,6 @@
-# DeepSearch Agents Frontend
+# TP · KG Studio Frontend
 
-React + Vite + Tailwind CSS + Ant Design frontend for the DeepSearch Agents FastAPI backend.
+React + Vite + Tailwind CSS + Ant Design frontend for TP · KG Studio and its FastAPI agent backend.
 
 ## Run
 

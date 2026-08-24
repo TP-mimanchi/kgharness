@@ -16,6 +16,9 @@ import { ChatComposer } from "./components/ChatComposer";
 import { ConversationHistory } from "./components/ConversationHistory";
 import { ConversationThread } from "./components/ConversationThread";
 import { KnowledgeBasePage } from "./components/KnowledgeBasePage";
+import { SessionInsights } from "./components/SessionInsights";
+import { TPMark } from "./components/TPMark";
+import { WebGLGlass } from "./components/WebGLGlass";
 import type { ChatTurn } from "./components/ConversationThread";
 import {
   deleteConversation,
@@ -187,7 +190,7 @@ export default function App() {
   async function handleSubmit() {
     const cleanQuery = query.trim();
     if (!cleanQuery) {
-      message.warning("请输入研搜任务");
+      message.warning("请输入 KG 任务");
       return;
     }
 
@@ -302,19 +305,13 @@ export default function App() {
   const online = session.connectionState === "connected";
   return (
     <div className="chat-app-shell min-h-dvh">
-      <div className="aurora" aria-hidden>
-        <span className="aurora-blob aurora-blob--blue" />
-        <span className="aurora-blob aurora-blob--indigo" />
-        <span className="aurora-blob aurora-blob--teal" />
-        <span className="aurora-blob aurora-blob--pink" />
-        <span className="aurora-blob aurora-blob--green" />
-      </div>
+      <WebGLGlass />
       <aside className="chat-sidebar" aria-label="会话信息">
         <div className="sidebar-brand">
-          <span className="brand-mark" aria-hidden>深</span>
+          <TPMark />
           <div>
-            <h1>深度研搜</h1>
-            <p>DeepSearch Agents</p>
+            <h1>TP · KG</h1>
+            <p>Knowledge Graph Studio</p>
           </div>
         </div>
 
@@ -331,7 +328,7 @@ export default function App() {
             type="button"
           >
             <MessageOutlined />
-            智能研搜
+            KG 会话
           </button>
           <button
             className={activePage === "knowledge" ? "sidebar-nav-item sidebar-nav-item--active" : "sidebar-nav-item"}
@@ -343,7 +340,7 @@ export default function App() {
           </button>
         </nav>
 
-        <Button className="new-chat-button" block onClick={handleNewSession}>＋ 新建研搜</Button>
+        <Button className="new-chat-button" block onClick={handleNewSession}>＋ 新建会话</Button>
 
         <details className="agent-selector">
           <summary>
@@ -396,11 +393,11 @@ export default function App() {
         </div>
       </aside>
 
-      {activePage === "knowledge" ? <KnowledgeBasePage /> : <main className="chat-main">
+      {activePage === "knowledge" ? <KnowledgeBasePage /> : <div className="chat-workspace"><main className="chat-main">
         <header className="chat-topbar">
           <div>
-            <span className="panel-kicker">DEEPSEARCH / LIVE</span>
-            <h2>研究工作台</h2>
+            <span className="panel-kicker">KG / LIVE GRAPH</span>
+            <h2>知识图谱工作台</h2>
           </div>
           <div className="topbar-meta">
             <span>{session.currentRunId ? "RUN" : "THREAD"}</span>
@@ -438,7 +435,7 @@ export default function App() {
           stagedItems={stagedItems}
           uploadedItems={session.uploadedItems}
         />
-      </main>}
+      </main><SessionInsights turns={turns} isRunning={session.isRunning} /></div>}
     </div>
   );
 }
