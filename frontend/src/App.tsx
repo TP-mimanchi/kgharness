@@ -8,7 +8,8 @@ import {
   DownOutlined,
   FileSearchOutlined,
   MessageOutlined,
-  ToolOutlined
+  ToolOutlined,
+  VerticalAlignBottomOutlined
 } from "@ant-design/icons";
 import { Alert, App as AntApp, Button } from "antd";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -111,7 +112,9 @@ export default function App() {
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [activePage, setActivePage] = useState<"chat" | "knowledge">("chat");
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const streamRef = useRef<HTMLElement | null>(null);
+  const autoFollowRef = useRef(true);
   const session = useDeepAgentSession();
 
   // 恢复历史会话时置 true，跳过一次同步 effect，防止 switchToThread 清空 session 状态后
@@ -169,8 +172,20 @@ export default function App() {
     });
   }, [session.events, session.files, session.isRunning, session.result, session.threadId]);
 
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
+    autoFollowRef.current = true;
+    setShowJumpToLatest(false);
+    window.requestAnimationFrame(() => {
+      const streamNode = streamRef.current;
+      if (streamNode) {
+        streamNode.scrollTo({ top: streamNode.scrollHeight, behavior });
+      }
+    });
+  }, []);
+
   useEffect(() => {
     if (turns.length === 0) {
+      setShowJumpToLatest(false);
       return;
     }
 
@@ -179,13 +194,24 @@ export default function App() {
       return;
     }
 
+    if (!autoFollowRef.current) {
+      setShowJumpToLatest(true);
+      return;
+    }
+
     window.requestAnimationFrame(() => {
-      streamNode.scrollTo({
-        top: streamNode.scrollHeight,
-        behavior: "smooth"
-      });
+      streamNode.scrollTo({ top: streamNode.scrollHeight, behavior: "auto" });
     });
   }, [turns]);
+
+  function handleStreamScroll() {
+    const streamNode = streamRef.current;
+    if (!streamNode) return;
+    const distanceFromBottom = streamNode.scrollHeight - streamNode.scrollTop - streamNode.clientHeight;
+    const nearBottom = distanceFromBottom < 72;
+    autoFollowRef.current = nearBottom;
+    setShowJumpToLatest(!nearBottom);
+  }
 
   async function handleSubmit() {
     const cleanQuery = query.trim();
@@ -195,6 +221,8 @@ export default function App() {
     }
 
     const nextTurn = createTurn(cleanQuery, session.threadId);
+    autoFollowRef.current = true;
+    setShowJumpToLatest(false);
     setTurns((previous) => [...previous, nextTurn]);
     setQuery("");
 
@@ -228,8 +256,8 @@ export default function App() {
 
   async function handleCancel() {
     try {
-      const response = await session.cancelCurrentTask();
-      message.info(response.status === "cancelling" ? "取消请求已发送，正在等待当前调用结束" : "任务已取消");
+      await session.cancelCurrentTask();
+      message.success("任务已停止，后台正在完成清理");
     } catch (error) {
       message.error(error instanceof Error ? error.message : "取消任务失败");
     }
@@ -251,6 +279,8 @@ export default function App() {
     setQuery("");
     setStagedItems([]);
     setActivePage("chat");
+    autoFollowRef.current = true;
+    setShowJumpToLatest(false);
   }
 
   async function handleSelectConversation(id: string) {
@@ -260,6 +290,8 @@ export default function App() {
     }
 
     try {
+      autoFollowRef.current = true;
+      setShowJumpToLatest(false);
       const response = await fetchConversationMessages(id);
       const restoredTurns = buildTurns(response.messages, id);
       const restoredPath = extractSessionPath(response.messages);
@@ -414,12 +446,24 @@ export default function App() {
           />
         ) : null}
 
-        <section className="chat-stream-panel" ref={streamRef}>
-          <ConversationThread
-            onUseExample={setQuery}
-            turns={turns}
-          />
-        </section>
+        <div className="chat-stream-frame">
+          <section className="chat-stream-panel" onScroll={handleStreamScroll} ref={streamRef}>
+            <ConversationThread
+              onUseExample={setQuery}
+              turns={turns}
+            />
+          </section>
+          {showJumpToLatest ? (
+            <Button
+              className="jump-to-latest"
+              icon={<VerticalAlignBottomOutlined />}
+              onClick={() => scrollToLatest("auto")}
+              size="small"
+            >
+              回到最新
+            </Button>
+          ) : null}
+        </div>
 
         <ChatComposer
           isCancelling={session.isCancelling}

@@ -158,6 +158,7 @@ async def run_deep_agent(
 
     # 前端拿到工作目录后，可以展示本次任务生成的 Markdown/PDF 等产物
     monitor.report_session_dir(session_dir_str)
+    monitor.report_activity("planning", "正在理解任务并规划执行路径")
 
     # checkpointer 依赖 thread_id 区分会话记忆；同一 session_id 会复用同一条执行上下文
     config = {"configurable": {"thread_id": session_id}}
@@ -179,6 +180,7 @@ async def run_deep_agent(
         agent = await initialize_main_agent()
         last_answer = ""
         # messages 提供 token/content block 增量；updates 提供图节点状态变化。
+        active_generation_message_id: str | None = None
         async for stream_item in agent.astream(
             {"messages": [{"role": "user", "content": task_query + path_instruction}]},
             config=config,
@@ -194,10 +196,18 @@ async def run_deep_agent(
                 text_delta, reasoning_delta = _stream_content(message_chunk)
                 node = metadata.get("langgraph_node") if isinstance(metadata, dict) else None
                 if text_delta and node in {None, "model"}:
+                    message_id = getattr(message_chunk, "id", None)
+                    if message_id != active_generation_message_id:
+                        active_generation_message_id = message_id
+                        monitor.report_activity(
+                            "generating",
+                            "模型正在生成可交付内容",
+                            {"node": node, "message_id": message_id},
+                        )
                     monitor.report_message_delta(
                         text_delta,
                         node=node,
-                        message_id=getattr(message_chunk, "id", None),
+                        message_id=message_id,
                     )
                 if reasoning_delta and node in {None, "model"}:
                     monitor.report_reasoning_delta(reasoning_delta, node=node)

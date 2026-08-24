@@ -26,6 +26,14 @@ def test_execution_settings_validate_heartbeat(monkeypatch) -> None:
         ExecutionSettings.from_env()
 
 
+def test_execution_settings_validate_cancel_poll(monkeypatch) -> None:
+    monkeypatch.setenv("RUN_EXECUTION_MODE", "local")
+    monkeypatch.setenv("AGENT_CANCEL_POLL_SECONDS", "0.01")
+
+    with pytest.raises(ValueError, match="AGENT_CANCEL_POLL_SECONDS"):
+        ExecutionSettings.from_env()
+
+
 def test_run_event_contract_contains_trace_identity() -> None:
     event = RunBroker.build_event(
         "node_completed",

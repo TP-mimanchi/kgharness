@@ -239,21 +239,11 @@ async def cancel_task(thread_id: str):
         active_tasks.pop(thread_id, None)
         raise HTTPException(status_code=404, detail="任务不存在或已结束")
 
-    # 先发出取消信号，再短暂等待协程响应；若底层阻塞中，则返回 cancelling 给前端继续展示状态
+    # 取消接口只负责登记状态并注入取消信号，不能等待模型或第三方工具真正退出。
+    # 后台 execute_run 会在协程响应 CancelledError 后完成落库并发布 run_cancelled。
     task.cancel()
-    try:
-        await asyncio.wait_for(task, timeout=1.0)
-    except asyncio.CancelledError:
-        forget_task(thread_id, task)
-        return {"status": "cancelled", "thread_id": thread_id, "run_id": run_id}
-    except asyncio.TimeoutError:
-        return {"status": "cancelling", "thread_id": thread_id, "run_id": run_id}
-    except Exception as e:
-        forget_task(thread_id, task)
-        return {"status": "cancelled", "thread_id": thread_id, "run_id": run_id, "message": str(e)}
-
-    forget_task(thread_id, task)
-    return {"status": "cancelled", "thread_id": thread_id, "run_id": run_id}
+    await chat_database.update_run_status(run_id, "cancelling")
+    return {"status": "cancelling", "thread_id": thread_id, "run_id": run_id}
 
 
 @app.get("/api/runs/{run_id}")

@@ -156,6 +156,15 @@ class ToolMonitor:
         """报告主模型完成一次推理节点调用"""
         self._emit("model_call", "主模型完成一次推理")
 
+    def report_activity(
+        self,
+        phase: str,
+        message: str,
+        data: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """报告当前正在进行的可公开执行阶段，不包含隐藏思维链。"""
+        self._emit("activity", message, {"phase": phase, **(data or {})})
+
     def report_message_delta(
         self,
         delta: str,

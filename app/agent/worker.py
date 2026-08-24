@@ -48,14 +48,19 @@ async def _execute_claim(
     )
     delivery_completed = False
     try:
+        loop = asyncio.get_running_loop()
+        next_heartbeat_at = loop.time() + settings.worker_heartbeat_seconds
         while True:
             done, _ = await asyncio.wait(
                 {execution},
-                timeout=settings.worker_heartbeat_seconds,
+                timeout=settings.worker_cancel_poll_seconds,
             )
             if execution in done:
                 break
-            await broker.touch_claim(message_id, consumer_name)
+            now = loop.time()
+            if now >= next_heartbeat_at:
+                await broker.touch_claim(message_id, consumer_name)
+                next_heartbeat_at = now + settings.worker_heartbeat_seconds
             if await broker.cancel_requested(run_id):
                 execution.cancel()
         await execution

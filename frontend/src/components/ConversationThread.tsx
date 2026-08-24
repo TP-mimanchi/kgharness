@@ -152,6 +152,9 @@ function EventIcon({ event }: { event: string }) {
   if (event === "model_call") {
     return <RobotOutlined aria-hidden />;
   }
+  if (event === "activity") {
+    return <ClockCircleOutlined aria-hidden />;
+  }
   if (event === "run_queued" || event === "run_started") {
     return <ClockCircleOutlined aria-hidden />;
   }
@@ -176,6 +179,9 @@ function EventIcon({ event }: { event: string }) {
   if (event === "task_cancelled") {
     return <StopOutlined aria-hidden />;
   }
+  if (event === "cancel_requested") {
+    return <StopOutlined aria-hidden />;
+  }
   if (event === "error") {
     return <CloseCircleOutlined aria-hidden />;
   }
@@ -192,8 +198,34 @@ function FileIcon({ name }: { name: string }) {
   return <FileTextOutlined aria-hidden />;
 }
 
-function ThinkingTimeline({ events }: { events: MonitorMessage[] }) {
+function describeCurrentActivity(events: MonitorMessage[], result: string): string {
+  const latest = events[events.length - 1];
+  if (!latest) return result ? "正在流式生成与整理最终回答" : "正在接收任务并准备执行环境";
+  if (latest.event === "activity" || latest.event === "tool_start" || latest.event === "assistant_call") {
+    return latest.message;
+  }
+  if (latest.event === "cancel_requested") return "正在停止当前任务";
+  if (latest.event === "node_completed") {
+    const node = typeof latest.data.node === "string" ? latest.data.node : "当前";
+    return `${node} 节点已完成，正在决定下一步`;
+  }
+  if (latest.event === "model_call") return "模型推理已完成，正在整理执行结果";
+  if (latest.event === "session_created") return "执行工作区已就绪，正在分析任务";
+  if (latest.event === "run_started" || latest.event === "run_queued") return latest.message;
+  return result ? "正在流式生成与整理最终回答" : "正在继续执行任务";
+}
+
+function ThinkingTimeline({
+  events,
+  isRunning,
+  result,
+}: {
+  events: MonitorMessage[];
+  isRunning: boolean;
+  result: string;
+}) {
   const timelineRef = useRef<HTMLOListElement | null>(null);
+  const timelineFollowRef = useRef(true);
 
   useEffect(() => {
     const timelineNode = timelineRef.current;
@@ -201,46 +233,71 @@ function ThinkingTimeline({ events }: { events: MonitorMessage[] }) {
       return;
     }
 
-    window.requestAnimationFrame(() => {
-      timelineNode.scrollTop = timelineNode.scrollHeight;
-    });
+    if (timelineFollowRef.current) {
+      window.requestAnimationFrame(() => {
+        timelineNode.scrollTop = timelineNode.scrollHeight;
+      });
+    }
   }, [events.length]);
 
   if (events.length === 0) {
     return (
-      <div className="thinking-empty">
-        <ClockCircleOutlined aria-hidden />
-        等待后端推送执行事件
-      </div>
+      <>
+        {isRunning ? (
+          <div className="current-activity" aria-live="polite">
+            <span className="current-activity-pulse" aria-hidden />
+            <div><small>当前步骤</small><strong>{describeCurrentActivity(events, result)}</strong></div>
+          </div>
+        ) : null}
+        <div className="thinking-empty">
+          <ClockCircleOutlined aria-hidden />
+          等待后端推送执行事件
+        </div>
+      </>
     );
   }
 
   return (
-    <ol className="thinking-timeline" ref={timelineRef}>
-      {events.map((event, index) => (
-        <li
-          className={`thinking-event thinking-event--${event.event}`}
-          key={`${event.timestamp}-${index}`}
-        >
-          <span className="thinking-event-icon">
-            <EventIcon event={event.event} />
-          </span>
-          <div>
-            <div className="thinking-event-meta">
-              <span>{event.event}</span>
-              <time dateTime={event.timestamp}>
-                {formatTime(event.timestamp)}
-              </time>
+    <>
+      {isRunning ? (
+        <div className="current-activity" aria-live="polite">
+          <span className="current-activity-pulse" aria-hidden />
+          <div><small>当前步骤</small><strong>{describeCurrentActivity(events, result)}</strong></div>
+        </div>
+      ) : null}
+      <ol
+        className="thinking-timeline"
+        onScroll={(event) => {
+          const node = event.currentTarget;
+          timelineFollowRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 40;
+        }}
+        ref={timelineRef}
+      >
+        {events.map((event, index) => (
+          <li
+            className={`thinking-event thinking-event--${event.event}`}
+            key={`${event.timestamp}-${index}`}
+          >
+            <span className="thinking-event-icon">
+              <EventIcon event={event.event} />
+            </span>
+            <div>
+              <div className="thinking-event-meta">
+                <span>{event.event}</span>
+                <time dateTime={event.timestamp}>
+                  {formatTime(event.timestamp)}
+                </time>
+              </div>
+              <p>{event.message}</p>
+              {event.event === "assistant_call" ||
+              event.event === "tool_start" ? (
+                <code>{JSON.stringify(event.data)}</code>
+              ) : null}
             </div>
-            <p>{event.message}</p>
-            {event.event === "assistant_call" ||
-            event.event === "tool_start" ? (
-              <code>{JSON.stringify(event.data)}</code>
-            ) : null}
-          </div>
-        </li>
-      ))}
-    </ol>
+          </li>
+        ))}
+      </ol>
+    </>
   );
 }
 
@@ -388,7 +445,7 @@ function AssistantMessage({
             </span>
             <strong>{events.length}</strong>
           </summary>
-          <ThinkingTimeline events={events} />
+          <ThinkingTimeline events={events} isRunning={isRunning} result={result} />
         </details>
 
         {result ? (

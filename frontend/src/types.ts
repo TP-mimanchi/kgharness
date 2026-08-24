@@ -5,6 +5,8 @@ export type MonitorEventName =
   | "tool_start"
   | "assistant_call"
   | "model_call"
+  | "activity"
+  | "cancel_requested"
   | "task_result"
   | "task_cancelled"
   | "error"

@@ -327,17 +327,30 @@ export function useDeepAgentSession() {
     setLastError("");
     try {
       const response = await cancelTask(threadId);
-      if (response.status === "cancelled") {
-        setIsRunning(false);
-        setIsCancelling(false);
-        setResult((previous) => previous || "任务已取消");
-      }
+      const acceptedAt = new Date().toISOString();
+      const cancelEvent: MonitorMessage = {
+        type: "monitor_event",
+        event: "cancel_requested",
+        message: "取消请求已确认，后台正在停止当前调用",
+        data: { status: response.status },
+        run_id: response.run_id || currentRunId || null,
+        thread_id: threadId,
+        timestamp: acceptedAt
+      };
+      setEvents((previous) => [
+        ...previous,
+        cancelEvent
+      ].slice(-MAX_EVENTS));
+      // 取消一经 API 接受就立即释放输入区；后台终止事件仍会继续同步并落库。
+      setIsRunning(false);
+      setIsCancelling(false);
+      setResult((previous) => previous || "任务已取消");
       return response;
     } catch (error) {
       setIsCancelling(false);
       throw error;
     }
-  }, [isRunning, threadId]);
+  }, [currentRunId, isRunning, threadId]);
 
   const uploadFiles = useCallback(
     async (items: UploadedItem[]) => {

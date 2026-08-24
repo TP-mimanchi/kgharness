@@ -40,6 +40,7 @@ class ExecutionSettings:
     worker_concurrency: int
     worker_claim_idle_ms: int
     worker_heartbeat_seconds: float
+    worker_cancel_poll_seconds: float
 
     @classmethod
     def from_env(cls) -> "ExecutionSettings":
@@ -81,6 +82,9 @@ class ExecutionSettings:
             ),
             worker_heartbeat_seconds=_float_env(
                 "AGENT_WORKER_HEARTBEAT_SECONDS", 10, 1, 300
+            ),
+            worker_cancel_poll_seconds=_float_env(
+                "AGENT_CANCEL_POLL_SECONDS", 0.5, 0.1, 5
             ),
         )
 
