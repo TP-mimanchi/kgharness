@@ -67,8 +67,6 @@ Thumbs.db
 !uv.lock
 
 # Keep local reference material private, but version the deployable architecture.
-docs/*
-!docs/enterprise-architecture.md
 .env.db
 docker/compose.db.yaml
 local-data
