@@ -18,6 +18,7 @@ import { Button, Tooltip } from "antd";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { getDownloadUrl } from "../lib/api";
+import { countEvents } from "../lib/telemetry";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import type { MonitorMessage, OutputFile } from "../types";
 
@@ -372,9 +373,9 @@ function ThinkingLoader({ durationLabel, phase }: { durationLabel: string; phase
 }
 
 function TurnTelemetry({ events }: { events: MonitorMessage[] }) {
-  const modelCalls = events.filter((event) => event.event === "model_call").length;
-  const toolCalls = events.filter((event) => event.event === "tool_start").length;
-  const assistantCalls = events.filter((event) => event.event === "assistant_call").length;
+  const modelCalls = countEvents(events, "model_usage") || countEvents(events, "model_call");
+  const toolCalls = countEvents(events, "tool_start");
+  const assistantCalls = countEvents(events, "assistant_call");
 
   return (
     <header className="turn-telemetry" aria-label="本轮调用统计">

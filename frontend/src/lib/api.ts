@@ -26,9 +26,14 @@ async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit): Pro
     : await response.text();
 
   if (!response.ok) {
+    const detail = typeof payload === "object" && payload && "detail" in payload
+      ? payload.detail
+      : null;
     const message =
-      typeof payload === "object" && payload && "detail" in payload
-        ? String(payload.detail)
+      typeof detail === "object" && detail && "message" in detail
+        ? String(detail.message)
+        : detail !== null
+          ? String(detail)
         : `HTTP ${response.status}`;
     throw new Error(message);
   }

@@ -8,6 +8,7 @@ Agent 执行过程监控模块
 import asyncio
 import builtins
 import datetime
+import uuid
 from typing import Any, Optional
 
 from fastapi import WebSocket
@@ -57,6 +58,7 @@ class ToolMonitor:
         run_id = get_run_context() or thread_id
         payload = {
             "type": "monitor_event",
+            "event_id": str(uuid.uuid4()),
             "event": event_type,
             "message": message,
             "data": data or {},
@@ -164,6 +166,29 @@ class ToolMonitor:
     ) -> None:
         """报告当前正在进行的可公开执行阶段，不包含隐藏思维链。"""
         self._emit("activity", message, {"phase": phase, **(data or {})})
+
+    def report_model_usage(
+        self,
+        *,
+        call_id: str,
+        input_tokens: int,
+        output_tokens: int,
+        model_name: str | None = None,
+        node: str | None = None,
+    ) -> None:
+        """报告一次模型调用的最终用量；每个 call_id 只应上报一次。"""
+        self._emit(
+            "model_usage",
+            "模型调用用量已更新",
+            {
+                "call_id": call_id,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+                "model_name": model_name,
+                "node": node,
+            },
+        )
 
     def report_message_delta(
         self,

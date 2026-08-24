@@ -153,6 +153,12 @@ async def run_task(
     except ValueError as error:
         raise HTTPException(status_code=400, detail="X-Tenant-ID 必须是合法 UUID") from error
 
+    stale_run_ids = await chat_database.finalize_stale_cancellations(thread_id)
+    if execution_settings.distributed:
+        for stale_run_id in stale_run_ids:
+            await broker.set_status(stale_run_id, "cancelled")
+            await broker.clear_active_run(thread_id, stale_run_id)
+
     existing_run = await chat_database.get_active_run(thread_id)
     if existing_run:
         raise HTTPException(

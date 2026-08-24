@@ -19,4 +19,5 @@ model = ChatOpenAI(
     base_url=os.getenv("DASHSCOPE_BASE_URL", os.getenv("OPENAI_BASE_URL")),
     timeout=60,
     max_retries=2,
+    stream_usage=True,
 )

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cancelTask, listSessionFiles, startTask, uploadSessionFiles } from "../lib/api";
 import { apiEventStreamUrl, WS_BASE_URL } from "../lib/config";
 import { createThreadId, getStoredThreadId, storeThreadId } from "../lib/thread";
+import { countEvents } from "../lib/telemetry";
 import type {
   ConnectionState,
   MonitorMessage,
@@ -395,9 +396,9 @@ export function useDeepAgentSession() {
   );
 
   const stats = useMemo(() => {
-    const toolEvents = events.filter((event) => event.event === "tool_start").length;
-    const assistantEvents = events.filter((event) => event.event === "assistant_call").length;
-    const errorEvents = events.filter((event) => event.event === "error").length;
+    const toolEvents = countEvents(events, "tool_start");
+    const assistantEvents = countEvents(events, "assistant_call");
+    const errorEvents = countEvents(events, "error");
 
     return {
       toolEvents,

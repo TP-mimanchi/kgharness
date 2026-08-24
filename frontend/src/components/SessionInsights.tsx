@@ -1,5 +1,7 @@
 import { ArrowDownOutlined, ArrowUpOutlined, BranchesOutlined, ToolOutlined } from "@ant-design/icons";
 import type { CSSProperties } from "react";
+import { countEvents, uniqueEvents } from "../lib/telemetry";
+import type { MonitorMessage } from "../types";
 import type { ChatTurn } from "./ConversationThread";
 
 interface SessionInsightsProps {
@@ -8,54 +10,27 @@ interface SessionInsightsProps {
 }
 
 interface TokenPoint {
-  input: number;
-  output: number;
-  actual: boolean;
+  cumulativeInput: number;
+  cumulativeOutput: number;
 }
 
 function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function findUsage(value: unknown, depth = 0): { input: number; output: number } | null {
-  if (!value || typeof value !== "object" || depth > 4) return null;
-  const record = value as Record<string, unknown>;
-  const input = finiteNumber(record.input_tokens) ?? finiteNumber(record.prompt_tokens);
-  const output = finiteNumber(record.output_tokens) ?? finiteNumber(record.completion_tokens);
-  if (input !== null || output !== null) {
-    return { input: input ?? 0, output: output ?? 0 };
+function cumulativeUsage(events: MonitorMessage[]): TokenPoint[] {
+  let cumulativeInput = 0;
+  let cumulativeOutput = 0;
+  const points: TokenPoint[] = [];
+  for (const event of uniqueEvents(events, "model_usage")) {
+    const input = finiteNumber(event.data.input_tokens) ?? 0;
+    const output = finiteNumber(event.data.output_tokens) ?? 0;
+    if (input + output <= 0) continue;
+    cumulativeInput += input;
+    cumulativeOutput += output;
+    points.push({ cumulativeInput, cumulativeOutput });
   }
-  for (const nested of Object.values(record)) {
-    const usage = findUsage(nested, depth + 1);
-    if (usage) return usage;
-  }
-  return null;
-}
-
-function estimateTokens(content: string): number {
-  if (!content) return 0;
-  const han = (content.match(/[\u3400-\u9fff]/g) || []).length;
-  const rest = Math.max(0, content.length - han);
-  return Math.max(1, Math.round(han * 1.05 + rest / 4));
-}
-
-function tokenPoint(turn: ChatTurn): TokenPoint {
-  let input = 0;
-  let output = 0;
-  let actual = false;
-  for (const event of turn.events) {
-    const usage = findUsage(event.data);
-    if (usage) {
-      input += usage.input;
-      output += usage.output;
-      actual = true;
-    }
-  }
-  if (!actual) {
-    input = estimateTokens(turn.content);
-    output = estimateTokens(turn.result);
-  }
-  return { input, output, actual };
+  return points;
 }
 
 function compact(value: number): string {
@@ -70,15 +45,19 @@ function points(values: number[], width: number, height: number): string {
 }
 
 export function SessionInsights({ turns, isRunning }: SessionInsightsProps) {
-  const data = turns.map(tokenPoint).slice(-8);
-  const chartData = data.length > 0 ? data : [{ input: 0, output: 0, actual: false }];
-  const inputs = chartData.map((item) => item.input);
-  const outputs = chartData.map((item) => item.output);
-  const totalInput = data.reduce((sum, item) => sum + item.input, 0);
-  const totalOutput = data.reduce((sum, item) => sum + item.output, 0);
-  const tools = turns.reduce((sum, turn) => sum + turn.events.filter((event) => event.event === "tool_start").length, 0);
-  const agents = turns.reduce((sum, turn) => sum + turn.events.filter((event) => event.event === "assistant_call").length, 0);
-  const hasActual = data.some((item) => item.actual);
+  const allEvents = turns.flatMap((turn) => turn.events);
+  const usagePoints = cumulativeUsage(allEvents);
+  const chartData = usagePoints.slice(-10);
+  const visibleData = chartData.length > 0 ? chartData : [{ cumulativeInput: 0, cumulativeOutput: 0 }];
+  const inputs = visibleData.map((item) => item.cumulativeInput);
+  const outputs = visibleData.map((item) => item.cumulativeOutput);
+  const totals = usagePoints[usagePoints.length - 1];
+  const totalInput = totals?.cumulativeInput ?? 0;
+  const totalOutput = totals?.cumulativeOutput ?? 0;
+  const tools = countEvents(allEvents, "tool_start");
+  const agents = countEvents(allEvents, "assistant_call");
+  const hasActual = usagePoints.length > 0;
+  const firstVisibleCall = Math.max(1, usagePoints.length - chartData.length + 1);
   const success = turns.length === 0 ? 100 : Math.round((turns.filter((turn) => !turn.isRunning && Boolean(turn.result)).length / turns.length) * 100);
 
   return (
@@ -96,22 +75,22 @@ export function SessionInsights({ turns, isRunning }: SessionInsightsProps) {
       <section className="token-summary" aria-label="Token 总览">
         <div className="token-summary-title">
           <span>Token 总览</span>
-          <em>{hasActual ? "API" : "近似估算"}</em>
+          <em>{hasActual ? "API" : "等待数据"}</em>
         </div>
         <strong>{compact(totalInput + totalOutput)}</strong>
-        <small>当前会话累计</small>
+        <small>{usagePoints.length} 次模型调用累计</small>
         <div className="token-split">
           <span><ArrowDownOutlined />输入 <b>{compact(totalInput)}</b></span>
           <span><ArrowUpOutlined />输出 <b>{compact(totalOutput)}</b></span>
         </div>
       </section>
 
-      <section className="token-chart" aria-label="每轮 Token 变化">
+      <section className="token-chart" aria-label="每次模型调用 Token 累计变化">
         <div className="insight-section-heading">
-          <div><strong>Token 变化</strong><small>最近 {Math.max(data.length, 1)} 轮对话</small></div>
+          <div><strong>调用累计</strong><small>最近 {Math.max(chartData.length, 1)} 次模型调用</small></div>
           <div className="chart-legend"><i className="legend-input" />输入<i className="legend-output" />输出</div>
         </div>
-        <svg viewBox="0 0 260 126" preserveAspectRatio="none" role="img" aria-label="输入输出 token 折线图">
+        <svg viewBox="0 0 260 126" preserveAspectRatio="none" role="img" aria-label="每次模型调用累计输入输出 token 折线图">
           <defs>
             <linearGradient id="output-area" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0" stopColor="#6f5cff" stopOpacity=".24" />
@@ -124,7 +103,7 @@ export function SessionInsights({ turns, isRunning }: SessionInsightsProps) {
           <polyline className="chart-line chart-line--output" points={points(outputs, 260, 112)} />
         </svg>
         <div className="chart-axis">
-          {chartData.map((_, index) => <span key={index}>{index + 1}</span>)}
+          {visibleData.map((_, index) => <span key={index}>{firstVisibleCall + index}</span>)}
         </div>
       </section>
 

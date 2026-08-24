@@ -5,6 +5,7 @@ export type MonitorEventName =
   | "tool_start"
   | "assistant_call"
   | "model_call"
+  | "model_usage"
   | "activity"
   | "cancel_requested"
   | "task_result"
@@ -14,6 +15,7 @@ export type MonitorEventName =
 
 export interface MonitorMessage {
   type: "monitor_event";
+  event_id?: string;
   event: MonitorEventName;
   message: string;
   data: Record<string, unknown>;
@@ -152,6 +154,10 @@ export interface ConversationListResponse {
 
 export interface ConversationMessagesResponse {
   messages: ChatMessageRecord[];
+  active_run?: {
+    id: string;
+    status: string;
+  } | null;
 }
 
 export interface DeleteConversationResponse {

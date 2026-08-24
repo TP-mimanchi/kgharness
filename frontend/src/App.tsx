@@ -284,11 +284,6 @@ export default function App() {
   }
 
   async function handleSelectConversation(id: string) {
-    if (id === session.threadId && turns.length > 0) {
-      setActivePage("chat");
-      return;
-    }
-
     try {
       autoFollowRef.current = true;
       setShowJumpToLatest(false);
@@ -296,6 +291,10 @@ export default function App() {
       const restoredTurns = buildTurns(response.messages, id);
       const restoredPath = extractSessionPath(response.messages);
       const lastTurn = restoredTurns[restoredTurns.length - 1];
+      const backendIsRunning = response.active_run?.status === "queued" || response.active_run?.status === "running";
+      if (lastTurn) {
+        lastTurn.isRunning = backendIsRunning;
+      }
 
       // 先切 thread，把最后一轮数据作为种子写入 session 状态：
       // restoreGuard 跳过紧随其后的第一次同步，之后文件轮询触发的同步
@@ -305,7 +304,7 @@ export default function App() {
         events: lastTurn?.events ?? [],
         files: lastTurn?.files ?? [],
         result: lastTurn?.result ?? "",
-        isRunning: Boolean(lastTurn?.isRunning),
+        isRunning: backendIsRunning,
         sessionPath: restoredPath
       });
       setTurns(restoredTurns);

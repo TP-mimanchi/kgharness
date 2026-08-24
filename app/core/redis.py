@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -329,6 +330,7 @@ class RunBroker:
     ) -> dict[str, Any]:
         return {
             "type": "monitor_event",
+            "event_id": str(uuid.uuid4()),
             "event": event,
             "message": message,
             "data": data or {},

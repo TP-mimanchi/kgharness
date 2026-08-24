@@ -315,6 +315,29 @@ class ChatDatabase:
             ).fetchone()
             return dict(row) if row else None
 
+    async def finalize_stale_cancellations(
+        self,
+        conversation_id: str,
+        *,
+        stale_after_seconds: float = 5.0,
+    ) -> list[str]:
+        """Release runs left in cancelling after a worker died or lost its lease."""
+        async with self.connection() as connection:
+            rows = await (
+                await connection.execute(
+                    """
+                    UPDATE agent_runs
+                    SET status = 'cancelled', completed_at = now(), updated_at = now()
+                    WHERE conversation_id = %s
+                      AND status = 'cancelling'
+                      AND updated_at < now() - (%s * interval '1 second')
+                    RETURNING id::text AS id
+                    """,
+                    (conversation_id, stale_after_seconds),
+                )
+            ).fetchall()
+            return [str(row["id"]) for row in rows]
+
     async def list_conversations(self) -> list[dict[str, Any]]:
         async with self.connection() as connection:
             rows = await (

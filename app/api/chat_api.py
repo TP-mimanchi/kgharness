@@ -77,8 +77,17 @@ async def list_chat_messages(chat_id: str):
     chat_id = _canonical_chat_id(chat_id)
     if not await database.conversation_exists(chat_id):
         raise HTTPException(status_code=404, detail="会话不存在")
+    await database.finalize_stale_cancellations(chat_id)
     messages = await database.list_messages(chat_id)
-    return {"messages": messages}
+    active_run = await database.get_active_run(chat_id)
+    return {
+        "messages": messages,
+        "active_run": (
+            {"id": str(active_run["id"]), "status": str(active_run["status"])}
+            if active_run
+            else None
+        ),
+    }
 
 
 @router.delete("/{chat_id}")

@@ -8,6 +8,7 @@ import pytest
 from app.core.config import ExecutionSettings
 from app.core.redis import RunBroker
 from app.services.agent_execution import extract_final_answer, terminal_status
+from app.agent.main_agent import _stream_usage
 
 
 def test_distributed_mode_requires_redis_url(monkeypatch) -> None:
@@ -46,8 +47,27 @@ def test_run_event_contract_contains_trace_identity() -> None:
     assert event["type"] == "monitor_event"
     assert event["run_id"] == "run-1"
     assert event["thread_id"] == "thread-1"
+    assert event["event_id"]
     assert event["data"] == {"node": "rag_agent"}
     datetime.fromisoformat(event["timestamp"])
+
+
+def test_stream_usage_normalizes_provider_metadata() -> None:
+    class Chunk:
+        usage_metadata = {"input_tokens": 120, "output_tokens": 35}
+        response_metadata = {}
+
+    assert _stream_usage(Chunk()) == (120, 35)
+
+
+def test_stream_usage_supports_openai_token_usage() -> None:
+    class Chunk:
+        usage_metadata = None
+        response_metadata = {
+            "token_usage": {"prompt_tokens": 80, "completion_tokens": 20}
+        }
+
+    assert _stream_usage(Chunk()) == (80, 20)
 
 
 def test_terminal_result_normalization() -> None:

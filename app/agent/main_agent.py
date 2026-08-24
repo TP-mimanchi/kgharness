@@ -105,6 +105,35 @@ def _stream_content(message: Any) -> tuple[str, str]:
     return "".join(text_parts), "".join(reasoning_parts)
 
 
+def _stream_usage(message: Any) -> tuple[int, int] | None:
+    """Extract final per-call token usage from OpenAI-compatible stream chunks."""
+    usage = getattr(message, "usage_metadata", None)
+    if not isinstance(usage, dict):
+        response_metadata = getattr(message, "response_metadata", {}) or {}
+        usage = response_metadata.get("token_usage") or response_metadata.get("usage")
+    if not isinstance(usage, dict):
+        return None
+
+    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
+    output_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
+    try:
+        normalized = (int(input_tokens or 0), int(output_tokens or 0))
+    except (TypeError, ValueError):
+        return None
+    return normalized if sum(normalized) > 0 else None
+
+
+def _stream_model_name(message: Any, metadata: Any) -> str | None:
+    response_metadata = getattr(message, "response_metadata", {}) or {}
+    candidates = [
+        metadata.get("ls_model_name") if isinstance(metadata, dict) else None,
+        metadata.get("model_name") if isinstance(metadata, dict) else None,
+        response_metadata.get("model_name"),
+        response_metadata.get("model"),
+    ]
+    return next((str(value) for value in candidates if value), None)
+
+
 async def run_deep_agent(
     task_query: str,
     session_id: str,
@@ -181,6 +210,7 @@ async def run_deep_agent(
         last_answer = ""
         # messages 提供 token/content block 增量；updates 提供图节点状态变化。
         active_generation_message_id: str | None = None
+        reported_usage_call_ids: set[str] = set()
         async for stream_item in agent.astream(
             {"messages": [{"role": "user", "content": task_query + path_instruction}]},
             config=config,
@@ -195,6 +225,23 @@ async def run_deep_agent(
                 message_chunk, metadata = chunk
                 text_delta, reasoning_delta = _stream_content(message_chunk)
                 node = metadata.get("langgraph_node") if isinstance(metadata, dict) else None
+                usage = _stream_usage(message_chunk)
+                if usage:
+                    raw_message_id = getattr(message_chunk, "id", None)
+                    call_id = (
+                        str(raw_message_id)
+                        if raw_message_id
+                        else f"{run_id}:{node or 'model'}:{len(reported_usage_call_ids) + 1}"
+                    )
+                    if call_id not in reported_usage_call_ids:
+                        reported_usage_call_ids.add(call_id)
+                        monitor.report_model_usage(
+                            call_id=call_id,
+                            input_tokens=usage[0],
+                            output_tokens=usage[1],
+                            model_name=_stream_model_name(message_chunk, metadata),
+                            node=str(node) if node else None,
+                        )
                 if text_delta and node in {None, "model"}:
                     message_id = getattr(message_chunk, "id", None)
                     if message_id != active_generation_message_id:
@@ -235,7 +282,8 @@ async def run_deep_agent(
                                     monitor.report_assistant(
                                         args.get("subagent_type", "unknown"),
                                         {
-                                            "description": args.get("description", "")
+                                            "description": args.get("description", ""),
+                                            "tool_call_id": tool_call.get("id"),
                                         },
                                     )
                         else:
