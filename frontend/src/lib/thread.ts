@@ -41,19 +41,23 @@ export function createThreadId(): string {
 }
 
 export function getStoredThreadId(): string {
-  const existing = window.localStorage.getItem(STORAGE_KEY) || window.localStorage.getItem(LEGACY_STORAGE_KEY);
+  // Active conversation selection is tab-scoped. localStorage is shared by every
+  // window on the same origin and caused independent windows to submit into the
+  // same conversation, where the backend correctly permits only one active run.
+  const existing = window.sessionStorage.getItem(STORAGE_KEY);
   if (isValidThreadId(existing)) {
-    window.localStorage.setItem(STORAGE_KEY, existing);
-    window.localStorage.removeItem(LEGACY_STORAGE_KEY);
     return existing;
   }
 
-  // 旧版本在非安全 HTTP 环境中会生成 manual-*，这里自动迁移为后端要求的 UUID。
+  // Do not migrate the old localStorage value: every newly opened tab must start
+  // with an independent conversation. Existing chats remain available in history.
+  window.localStorage.removeItem(STORAGE_KEY);
+  window.localStorage.removeItem(LEGACY_STORAGE_KEY);
   const threadId = createThreadId();
-  window.localStorage.setItem(STORAGE_KEY, threadId);
+  window.sessionStorage.setItem(STORAGE_KEY, threadId);
   return threadId;
 }
 
 export function storeThreadId(threadId: string): void {
-  window.localStorage.setItem(STORAGE_KEY, threadId);
+  window.sessionStorage.setItem(STORAGE_KEY, threadId);
 }

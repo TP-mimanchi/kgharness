@@ -13,6 +13,7 @@ from typing import Any
 
 from deepagents import create_deep_agent
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
 
 from app.agent.llm import model
 from app.agent.prompts import main_agent_content
@@ -27,6 +28,9 @@ from app.api.context import (
     set_thread_context,
 )
 from app.api.monitor import monitor
+from app.core.config import settings as execution_settings
+from app.core.errors import is_transient_infrastructure_error
+from app.core.postgres import create_postgres_pool
 from app.rag.config import settings as rag_settings
 
 # 文件类工具由主智能体直接掌握，负责读取上传附件和生成最终交付文档
@@ -40,38 +44,68 @@ from app.tools.upload_file_read_tool import read_file_content
 # 3. checkpointer 通过 thread_id 保存同一会话中的执行上下文
 main_agent = None
 _main_agent_lock = asyncio.Lock()
-_checkpointer_context = None
+_checkpoint_pool: AsyncConnectionPool | None = None
 
 
 async def initialize_main_agent():
     """Build the agent once with a durable PostgreSQL checkpointer."""
-    global main_agent, _checkpointer_context
+    global main_agent, _checkpoint_pool
     if main_agent is not None:
         return main_agent
     async with _main_agent_lock:
         if main_agent is not None:
             return main_agent
-        _checkpointer_context = AsyncPostgresSaver.from_conn_string(
-            rag_settings.database_url
-        )
-        checkpointer = await _checkpointer_context.__aenter__()
-        await checkpointer.setup()
-        main_agent = create_deep_agent(
-            model=model,
-            system_prompt=main_agent_content["system_prompt"],
-            tools=[generate_markdown, convert_md_to_pdf, read_file_content],
-            checkpointer=checkpointer,
-            subagents=[database_query_agent, network_search_agent, knowledge_base_agent],
-        )
+        try:
+            _checkpoint_pool = create_postgres_pool(
+                rag_settings.database_url,
+                name="langgraph-checkpoints",
+                min_size=execution_settings.checkpoint_pool_min_size,
+                max_size=execution_settings.checkpoint_pool_max_size,
+                autocommit=True,
+                prepare_threshold=0,
+            )
+            await _checkpoint_pool.open()
+            await _checkpoint_pool.wait(
+                timeout=execution_settings.postgres_pool_timeout_seconds
+            )
+            checkpointer = AsyncPostgresSaver(_checkpoint_pool)
+            await checkpointer.setup()
+            main_agent = create_deep_agent(
+                model=model,
+                system_prompt=main_agent_content["system_prompt"],
+                tools=[generate_markdown, convert_md_to_pdf, read_file_content],
+                checkpointer=checkpointer,
+                subagents=[
+                    database_query_agent,
+                    network_search_agent,
+                    knowledge_base_agent,
+                ],
+            )
+        except Exception:
+            if _checkpoint_pool is not None:
+                await _checkpoint_pool.close()
+                _checkpoint_pool = None
+            raise
         return main_agent
 
 
 async def shutdown_main_agent() -> None:
-    global main_agent, _checkpointer_context
+    global main_agent, _checkpoint_pool
     main_agent = None
-    if _checkpointer_context is not None:
-        await _checkpointer_context.__aexit__(None, None, None)
-        _checkpointer_context = None
+    if _checkpoint_pool is not None:
+        await _checkpoint_pool.close()
+        _checkpoint_pool = None
+
+
+async def main_agent_health() -> bool:
+    """Validate every idle checkpoint connection and replenish broken ones."""
+    if main_agent is None or _checkpoint_pool is None:
+        return False
+    try:
+        await _checkpoint_pool.check()
+        return True
+    except Exception:
+        return False
 
 # 当前文件位于 app/agent/main_agent.py，parents[1] 即 app 目录
 project_root_path = Path(__file__).parents[1].resolve()
@@ -182,7 +216,17 @@ async def run_deep_agent(
         # messages 提供 token/content block 增量；updates 提供图节点状态变化。
         active_generation_message_id: str | None = None
         async for stream_item in agent.astream(
-            {"messages": [{"role": "user", "content": task_query + path_instruction}]},
+            {
+                "messages": [
+                    {
+                        # Stable message identity makes infrastructure retries idempotent:
+                        # LangGraph replaces this message instead of appending it twice.
+                        "id": f"run:{run_id}:user",
+                        "role": "user",
+                        "content": task_query + path_instruction,
+                    }
+                ]
+            },
             config=config,
             stream_mode=["messages", "updates"],
         ):
@@ -259,8 +303,15 @@ async def run_deep_agent(
         monitor.report_task_cancelled()
         raise
     except Exception as e:
-        # 异步执行异常也走 monitor，保证前端能收到明确错误事件
-        monitor._emit("error", f"执行主智能发生异常信息：{str(e)}")
+        if is_transient_infrastructure_error(e):
+            monitor._emit(
+                "retryable_error",
+                "基础设施连接暂时不可用，任务将自动重试",
+                {"error_type": type(e).__name__},
+            )
+        else:
+            # 非瞬时错误明确展示给前端，并作为最终失败依据。
+            monitor._emit("error", f"执行主智能发生异常信息：{str(e)}")
         raise
     finally:
         # 任务结束后恢复 ContextVar，避免后续请求复用到本次会话目录或 thread_id

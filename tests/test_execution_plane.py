@@ -6,6 +6,8 @@ from datetime import datetime
 import pytest
 
 from app.core.config import ExecutionSettings
+from app.core.errors import TransientRunError, is_transient_infrastructure_error
+from app.core.postgres import create_postgres_pool
 from app.core.redis import RunBroker
 from app.services.agent_execution import extract_final_answer, terminal_status
 from app.agent.llm import ModelUsageMonitor, _result_usage
@@ -37,6 +39,34 @@ def test_execution_settings_validate_cancel_poll(monkeypatch) -> None:
         ExecutionSettings.from_env()
 
 
+def test_execution_settings_require_worker_ttl_above_heartbeat(monkeypatch) -> None:
+    monkeypatch.setenv("RUN_EXECUTION_MODE", "local")
+    monkeypatch.setenv("AGENT_WORKER_HEARTBEAT_SECONDS", "10")
+    monkeypatch.setenv("AGENT_WORKER_REGISTRY_TTL_SECONDS", "20")
+
+    with pytest.raises(ValueError, match="must exceed twice"):
+        ExecutionSettings.from_env()
+
+
+def test_postgres_pool_rotates_and_checks_connections() -> None:
+    pool = create_postgres_pool(
+        "postgresql://user:password@localhost/database",
+        name="test-pool",
+        min_size=1,
+        max_size=2,
+    )
+
+    assert pool.name == "test-pool"
+    assert pool.min_size == 1
+    assert pool.max_size == 2
+    assert pool.max_lifetime > pool.max_idle
+
+
+def test_closed_connection_is_classified_as_transient() -> None:
+    assert is_transient_infrastructure_error(RuntimeError("the connection is closed"))
+    assert not is_transient_infrastructure_error(ValueError("invalid tool argument"))
+
+
 def test_run_event_contract_contains_trace_identity() -> None:
     event = RunBroker.build_event(
         "node_completed",
@@ -52,6 +82,18 @@ def test_run_event_contract_contains_trace_identity() -> None:
     assert event["event_id"]
     assert event["data"] == {"node": "rag_agent"}
     datetime.fromisoformat(event["timestamp"])
+
+
+@pytest.mark.asyncio
+async def test_broker_health_pings_connected_client() -> None:
+    class Client:
+        async def ping(self) -> bool:
+            return True
+
+    broker = RunBroker()
+    broker.client = Client()  # type: ignore[assignment]
+
+    assert await broker.health() is True
 
 
 def test_result_usage_normalizes_provider_metadata() -> None:
@@ -178,6 +220,117 @@ async def test_worker_acks_database_terminal_delivery(monkeypatch) -> None:
     )
 
     assert calls == ["status:cancelled", "clear", "ack"]
+
+
+@pytest.mark.asyncio
+async def test_worker_requeues_transient_failure_with_same_run_id(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    get_run_calls = 0
+
+    async def get_status(_run_id: str) -> dict[str, str]:
+        return {"status": "queued"}
+
+    async def get_run(_run_id: str) -> dict[str, str]:
+        nonlocal get_run_calls
+        get_run_calls += 1
+        if get_run_calls == 1:
+            return {"status": "queued", "worker_id": ""}
+        return {"status": "running", "worker_id": "worker-1"}
+
+    async def execute_run(**_kwargs) -> str:
+        raise TransientRunError("the connection is closed")
+
+    async def reschedule_run(_run_id: str, **_kwargs) -> int:
+        calls.append(("rescheduled", 1))
+        return 1
+
+    async def requeue_run(**kwargs) -> str:
+        calls.append(("requeued_run_id", kwargs["run_id"]))
+        calls.append(("attempt", kwargs["attempt"]))
+        return "2-0"
+
+    async def acknowledge(message_id: str) -> None:
+        calls.append(("ack", message_id))
+
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("app.agent.worker.broker.get_status", get_status)
+    monkeypatch.setattr("app.agent.worker.chat_database.get_run", get_run)
+    monkeypatch.setattr("app.agent.worker.execute_run", execute_run)
+    monkeypatch.setattr("app.agent.worker.chat_database.reschedule_run", reschedule_run)
+    monkeypatch.setattr("app.agent.worker.broker.requeue_run", requeue_run)
+    monkeypatch.setattr("app.agent.worker.broker.acknowledge", acknowledge)
+    monkeypatch.setattr("app.agent.worker.asyncio.sleep", no_sleep)
+
+    await _execute_claim(
+        "worker-1",
+        "1-0",
+        {
+            "run_id": "run-1",
+            "thread_id": "thread-1",
+            "query": "hello",
+            "tenant_id": "tenant-1",
+            "attempt": "0",
+            "_delivery_kind": "new",
+        },
+    )
+
+    assert ("requeued_run_id", "run-1") in calls
+    assert ("attempt", 1) in calls
+    assert ("ack", "1-0") in calls
+
+
+@pytest.mark.asyncio
+async def test_worker_executes_distinct_conversations_concurrently(monkeypatch) -> None:
+    started_threads: set[str] = set()
+    both_started = asyncio.Event()
+    release_runs = asyncio.Event()
+    acknowledged: list[str] = []
+
+    async def get_status(_run_id: str) -> dict[str, str]:
+        return {"status": "queued"}
+
+    async def get_run(_run_id: str) -> dict[str, str]:
+        return {"status": "queued", "worker_id": ""}
+
+    async def execute_run(**kwargs) -> str:
+        started_threads.add(str(kwargs["thread_id"]))
+        if len(started_threads) == 2:
+            both_started.set()
+        await release_runs.wait()
+        return "completed"
+
+    async def acknowledge(message_id: str) -> None:
+        acknowledged.append(message_id)
+
+    monkeypatch.setattr("app.agent.worker.broker.get_status", get_status)
+    monkeypatch.setattr("app.agent.worker.chat_database.get_run", get_run)
+    monkeypatch.setattr("app.agent.worker.execute_run", execute_run)
+    monkeypatch.setattr("app.agent.worker.broker.acknowledge", acknowledge)
+
+    claims = [
+        _execute_claim(
+            f"worker-1:{index}",
+            f"{index + 1}-0",
+            {
+                "run_id": f"run-{index + 1}",
+                "thread_id": f"thread-{index + 1}",
+                "query": "hello",
+                "tenant_id": "tenant-1",
+            },
+        )
+        for index in range(2)
+    ]
+    tasks = [asyncio.create_task(claim) for claim in claims]
+    try:
+        await asyncio.wait_for(both_started.wait(), timeout=1)
+        assert started_threads == {"thread-1", "thread-2"}
+    finally:
+        release_runs.set()
+        await asyncio.gather(*tasks)
+
+    assert set(acknowledged) == {"1-0", "2-0"}
 
 
 def test_terminal_result_normalization() -> None:

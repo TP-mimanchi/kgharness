@@ -7,9 +7,8 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Sequence
 from uuid import UUID, uuid4
 
-from psycopg.rows import dict_row
-from psycopg_pool import AsyncConnectionPool
 
+from app.core.postgres import create_postgres_pool
 from app.rag.config import settings
 
 
@@ -23,17 +22,16 @@ def _vector_literal(values: Sequence[float]) -> str:
 
 class RAGDatabase:
     def __init__(self) -> None:
-        self.pool = AsyncConnectionPool(
-            conninfo=settings.database_url,
+        self.pool = create_postgres_pool(
+            settings.database_url,
+            name="rag-db",
             min_size=1,
             max_size=8,
-            open=False,
-            kwargs={"row_factory": dict_row},
         )
 
     async def open(self) -> None:
         await self.pool.open()
-        await self.pool.wait()
+        await self.pool.wait(timeout=self.pool.timeout)
 
     async def close(self) -> None:
         await self.pool.close()

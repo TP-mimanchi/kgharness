@@ -110,7 +110,8 @@ export function useDeepAgentSession() {
     }
 
     // Reasoning deltas are intentionally not rendered as hidden chain-of-thought.
-    // The timeline receives only auditable lifecycle summaries and tool activity.
+    // model_usage stays in the data stream for token charts; the conversation card
+    // filters it out and renders only auditable Agent lifecycle and action events.
     if (payload.event !== "reasoning_delta") {
       setEvents((previous) => [...previous, payload].slice(-MAX_EVENTS));
     }

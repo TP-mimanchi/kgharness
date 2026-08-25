@@ -47,6 +47,14 @@ class RunBroker:
     def active_run_key(self, thread_id: str) -> str:
         return f"{settings.redis_key_prefix}:thread:{thread_id}:active-run"
 
+    @property
+    def worker_registry_key(self) -> str:
+        return f"{settings.redis_key_prefix}:workers"
+
+    @property
+    def dead_letter_key(self) -> str:
+        return f"{settings.redis_key_prefix}:runs:dead-letter"
+
     async def connect(self, *, required: bool = False) -> bool:
         if not settings.redis_url:
             if required:
@@ -60,6 +68,8 @@ class RunBroker:
             decode_responses=True,
             socket_connect_timeout=settings.redis_socket_timeout_seconds,
             socket_timeout=settings.redis_socket_timeout_seconds,
+            socket_keepalive=True,
+            retry_on_timeout=True,
             health_check_interval=30,
         )
         try:
@@ -98,6 +108,54 @@ class RunBroker:
         except Exception:
             return False
 
+    async def heartbeat_worker(self, worker_id: str) -> None:
+        """Register a live worker using a timestamped lease."""
+        client = self._require_client()
+        now = datetime.now(UTC).timestamp()
+        cutoff = now - settings.worker_registry_ttl_seconds
+        async with client.pipeline(transaction=True) as pipeline:
+            pipeline.zadd(self.worker_registry_key, {worker_id: now})
+            pipeline.zremrangebyscore(self.worker_registry_key, "-inf", cutoff)
+            pipeline.expire(
+                self.worker_registry_key,
+                max(settings.run_ttl_seconds, settings.worker_registry_ttl_seconds * 2),
+            )
+            await pipeline.execute()
+
+    async def unregister_worker(self, worker_id: str) -> None:
+        await self._require_client().zrem(self.worker_registry_key, worker_id)
+
+    async def live_worker_count(self) -> int:
+        client = self._require_client()
+        cutoff = datetime.now(UTC).timestamp() - settings.worker_registry_ttl_seconds
+        await client.zremrangebyscore(self.worker_registry_key, "-inf", cutoff)
+        return int(await client.zcount(self.worker_registry_key, cutoff, "+inf"))
+
+    async def queue_stats(self) -> dict[str, int]:
+        """Return consumer-group pressure for readiness checks and alerting."""
+        groups = await self._require_client().xinfo_groups(self.queue_key)
+        group = next(
+            (item for item in groups if item.get("name") == settings.worker_group),
+            None,
+        )
+        if not group:
+            return {
+                "pending": 0,
+                "lag": 0,
+                "consumers": 0,
+                "dead_letters": int(
+                    await self._require_client().xlen(self.dead_letter_key)
+                ),
+            }
+        return {
+            "pending": int(group.get("pending") or 0),
+            "lag": int(group.get("lag") or 0),
+            "consumers": int(group.get("consumers") or 0),
+            "dead_letters": int(
+                await self._require_client().xlen(self.dead_letter_key)
+            ),
+        }
+
     async def enqueue_run(
         self,
         *,
@@ -116,6 +174,7 @@ class RunBroker:
                     "thread_id": thread_id,
                     "tenant_id": tenant_id,
                     "status": "queued",
+                    "attempt": "0",
                     "created_at": now,
                     "updated_at": now,
                 },
@@ -169,6 +228,80 @@ class RunBroker:
         await client.hset(self.state_key(run_id), mapping=mapping)
         await client.expire(self.state_key(run_id), settings.run_ttl_seconds)
 
+    async def requeue_run(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        tenant_id: str,
+        query: str,
+        attempt: int,
+        error: str,
+    ) -> str:
+        """Publish the next delivery for the same durable run identity."""
+        client = self._require_client()
+        now = datetime.now(UTC).isoformat()
+        async with client.pipeline(transaction=True) as pipeline:
+            pipeline.hset(
+                self.state_key(run_id),
+                mapping={
+                    "status": "queued",
+                    "attempt": str(attempt),
+                    "updated_at": now,
+                    "error": error[:4000],
+                },
+            )
+            pipeline.expire(self.state_key(run_id), settings.run_ttl_seconds)
+            pipeline.set(
+                self.active_run_key(thread_id),
+                run_id,
+                ex=settings.run_ttl_seconds,
+            )
+            pipeline.xadd(
+                self.queue_key,
+                {
+                    "run_id": run_id,
+                    "thread_id": thread_id,
+                    "tenant_id": tenant_id,
+                    "query": query,
+                    "attempt": str(attempt),
+                },
+            )
+            results = await pipeline.execute()
+        await self.publish_event(
+            run_id,
+            self.build_event(
+                "run_retrying",
+                f"基础设施暂时不可用，准备第 {attempt + 1} 次执行",
+                run_id=run_id,
+                thread_id=thread_id,
+                data={"status": "queued", "attempt": attempt, "error": error[:500]},
+            ),
+        )
+        return str(results[-1])
+
+    async def dead_letter_run(
+        self,
+        *,
+        run_id: str,
+        thread_id: str,
+        error: str,
+    ) -> str:
+        """Retain exhausted deliveries for operational inspection."""
+        return str(
+            await self._require_client().xadd(
+                self.dead_letter_key,
+                {
+                    "run_id": run_id,
+                    "thread_id": thread_id,
+                    "error": error[:4000],
+                    "failed_at": datetime.now(UTC).isoformat(),
+                },
+                maxlen=10_000,
+                approximate=True,
+            )
+        )
+
     async def get_status(self, run_id: str) -> dict[str, str]:
         client = self._require_client()
         return dict(await client.hgetall(self.state_key(run_id)))
@@ -213,7 +346,9 @@ class RunBroker:
         )
         if len(reclaimed) >= 2 and reclaimed[1]:
             message_id, fields = reclaimed[1][0]
-            return str(message_id), dict(fields)
+            payload = dict(fields)
+            payload["_delivery_kind"] = "reclaimed"
+            return str(message_id), payload
 
         messages = await client.xreadgroup(
             settings.worker_group,
@@ -228,7 +363,9 @@ class RunBroker:
         if not entries:
             return None
         message_id, fields = entries[0]
-        return str(message_id), dict(fields)
+        payload = dict(fields)
+        payload["_delivery_kind"] = "new"
+        return str(message_id), payload
 
     async def touch_claim(self, message_id: str, consumer_name: str) -> None:
         client = self._require_client()

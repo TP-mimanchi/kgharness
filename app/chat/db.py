@@ -7,10 +7,9 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
-from psycopg.rows import dict_row
 from psycopg.errors import UniqueViolation
-from psycopg_pool import AsyncConnectionPool
 
+from app.core.postgres import create_postgres_pool
 from app.rag.config import settings
 
 
@@ -20,17 +19,16 @@ class ActiveRunExistsError(RuntimeError):
 
 class ChatDatabase:
     def __init__(self) -> None:
-        self.pool = AsyncConnectionPool(
-            conninfo=settings.database_url,
+        self.pool = create_postgres_pool(
+            settings.database_url,
+            name="chat-db",
             min_size=1,
             max_size=4,
-            open=False,
-            kwargs={"row_factory": dict_row},
         )
 
     async def open(self) -> None:
         await self.pool.open()
-        await self.pool.wait()
+        await self.pool.wait(timeout=self.pool.timeout)
 
     async def close(self) -> None:
         await self.pool.close()
@@ -55,6 +53,7 @@ class ChatDatabase:
             CREATE TABLE IF NOT EXISTS chat_messages (
                 id uuid PRIMARY KEY,
                 conversation_id uuid NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+                run_id uuid,
                 role text NOT NULL CHECK (role IN ('user', 'assistant')),
                 content text NOT NULL DEFAULT '',
                 events jsonb NOT NULL DEFAULT '[]'::jsonb,
@@ -62,7 +61,9 @@ class ChatDatabase:
                 created_at timestamptz NOT NULL DEFAULT now()
             )
             """,
+            "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS run_id uuid",
             "CREATE INDEX IF NOT EXISTS chat_messages_conv_idx ON chat_messages (conversation_id, created_at)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS chat_messages_one_assistant_per_run ON chat_messages (run_id) WHERE run_id IS NOT NULL AND role = 'assistant'",
             """
             CREATE TABLE IF NOT EXISTS agent_runs (
                 id uuid PRIMARY KEY,
@@ -70,14 +71,18 @@ class ChatDatabase:
                 tenant_id uuid NOT NULL,
                 query text NOT NULL,
                 status text NOT NULL,
+                attempt integer NOT NULL DEFAULT 0,
                 worker_id text,
                 error_message text,
                 created_at timestamptz NOT NULL DEFAULT now(),
                 started_at timestamptz,
                 completed_at timestamptz,
+                last_heartbeat_at timestamptz,
                 updated_at timestamptz NOT NULL DEFAULT now()
             )
             """,
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 0",
+            "ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS last_heartbeat_at timestamptz",
             "CREATE INDEX IF NOT EXISTS agent_runs_conversation_idx ON agent_runs (conversation_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS agent_runs_active_idx ON agent_runs (conversation_id, status) WHERE status IN ('queued', 'running', 'cancelling')",
             "CREATE UNIQUE INDEX IF NOT EXISTS agent_runs_one_active_per_conversation ON agent_runs (conversation_id) WHERE status IN ('queued', 'running', 'cancelling')",
@@ -107,6 +112,14 @@ class ChatDatabase:
                 )
             ).fetchone()
             return bool(row)
+
+    async def health(self) -> bool:
+        try:
+            async with self.connection() as connection:
+                row = await (await connection.execute("SELECT 1 AS ok")).fetchone()
+                return bool(row and row["ok"] == 1)
+        except Exception:
+            return False
 
     async def add_message(
         self,
@@ -260,6 +273,10 @@ class ChatDatabase:
                         WHEN %s = 'running' THEN COALESCE(started_at, now())
                         ELSE started_at
                     END,
+                    last_heartbeat_at = CASE
+                        WHEN %s = 'running' THEN now()
+                        ELSE last_heartbeat_at
+                    END,
                     completed_at = CASE
                         WHEN %s IN ('completed', 'failed', 'cancelled') THEN now()
                         ELSE completed_at
@@ -280,6 +297,7 @@ class ChatDatabase:
                     error_message,
                     status,
                     status,
+                    status,
                     run_id,
                     status,
                     status,
@@ -288,6 +306,73 @@ class ChatDatabase:
             )
             ).fetchone()
             return row is not None
+
+    async def heartbeat_run(self, run_id: str, worker_id: str) -> bool:
+        """Renew the durable lease for one actively running delivery."""
+        async with self.connection() as connection:
+            row = await (
+                await connection.execute(
+                    """
+                    UPDATE agent_runs
+                    SET last_heartbeat_at = now(), updated_at = now()
+                    WHERE id = %s AND status = 'running' AND worker_id = %s
+                    RETURNING id
+                    """,
+                    (run_id, worker_id),
+                )
+            ).fetchone()
+            return row is not None
+
+    async def adopt_stale_run(
+        self,
+        run_id: str,
+        worker_id: str,
+        *,
+        stale_after_seconds: float,
+    ) -> bool:
+        """Transfer a running lease only after both Redis and PostgreSQL leases expired."""
+        async with self.connection() as connection:
+            row = await (
+                await connection.execute(
+                    """
+                    UPDATE agent_runs
+                    SET worker_id = %s, last_heartbeat_at = now(), updated_at = now()
+                    WHERE id = %s
+                      AND status = 'running'
+                      AND COALESCE(last_heartbeat_at, updated_at)
+                          < now() - (%s * interval '1 second')
+                    RETURNING id
+                    """,
+                    (worker_id, run_id, stale_after_seconds),
+                )
+            ).fetchone()
+            return row is not None
+
+    async def reschedule_run(
+        self,
+        run_id: str,
+        *,
+        worker_id: str,
+        error_message: str,
+        max_attempts: int,
+    ) -> int | None:
+        """Move a transiently failed run back to queued while preserving its identity."""
+        async with self.connection() as connection:
+            row = await (
+                await connection.execute(
+                    """
+                    UPDATE agent_runs
+                    SET status = 'queued', attempt = attempt + 1,
+                        worker_id = NULL, error_message = %s,
+                        last_heartbeat_at = NULL, updated_at = now()
+                    WHERE id = %s AND status = 'running' AND worker_id = %s
+                      AND attempt + 1 < %s
+                    RETURNING attempt
+                    """,
+                    (error_message[:4000], run_id, worker_id, max_attempts),
+                )
+            ).fetchone()
+            return int(row["attempt"]) if row else None
 
     async def get_run(self, run_id: str) -> dict[str, Any] | None:
         async with self.connection() as connection:
@@ -298,6 +383,68 @@ class ChatDatabase:
                 )
             ).fetchone()
             return dict(row) if row else None
+
+    async def finalize_run(
+        self,
+        *,
+        run_id: str,
+        conversation_id: str,
+        status: str,
+        worker_id: str,
+        content: str,
+        events: list[dict[str, Any]],
+        files: list[dict[str, Any]],
+        error_message: str | None = None,
+    ) -> bool:
+        """Atomically commit the terminal run state and its single assistant message."""
+        if status not in {"completed", "failed", "cancelled"}:
+            raise ValueError(f"Unsupported terminal status: {status}")
+        message_id = uuid4()
+        async with self.connection() as connection:
+            async with connection.transaction():
+                row = await (
+                    await connection.execute(
+                        """
+                        UPDATE agent_runs
+                        SET status = %s, worker_id = %s, error_message = %s,
+                            completed_at = now(), last_heartbeat_at = now(),
+                            updated_at = now()
+                        WHERE id = %s AND conversation_id = %s
+                          AND status IN ('queued', 'running', 'cancelling')
+                        RETURNING id
+                        """,
+                        (
+                            status,
+                            worker_id,
+                            error_message[:4000] if error_message else None,
+                            run_id,
+                            conversation_id,
+                        ),
+                    )
+                ).fetchone()
+                if not row:
+                    return False
+                await connection.execute(
+                    """
+                    INSERT INTO chat_messages (
+                        id, conversation_id, run_id, role, content, events, files
+                    )
+                    VALUES (%s, %s, %s, 'assistant', %s, %s::jsonb, %s::jsonb)
+                    """,
+                    (
+                        message_id,
+                        conversation_id,
+                        run_id,
+                        content,
+                        json.dumps(events, ensure_ascii=False),
+                        json.dumps(files, ensure_ascii=False),
+                    ),
+                )
+                await connection.execute(
+                    "UPDATE chat_conversations SET updated_at = now() WHERE id = %s",
+                    (conversation_id,),
+                )
+                return True
 
     async def get_active_run(self, conversation_id: str) -> dict[str, Any] | None:
         async with self.connection() as connection:

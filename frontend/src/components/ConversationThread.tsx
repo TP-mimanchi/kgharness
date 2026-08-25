@@ -18,11 +18,37 @@ import { Button, Tooltip } from "antd";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { getDownloadUrl } from "../lib/api";
-import { countEvents } from "../lib/telemetry";
+import { countEvents, uniqueEvents } from "../lib/telemetry";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import type { MonitorMessage, OutputFile } from "../types";
 
 type AgentPhase = "listening" | "planning" | "executing" | "complete";
+
+const AUDIT_EVENT_NAMES = new Set([
+  "run_queued",
+  "run_started",
+  "run_retrying",
+  "activity",
+  "session_created",
+  "model_call",
+  "node_completed",
+  "assistant_call",
+  "tool_start",
+  "retryable_error",
+  "cancel_requested",
+  "task_cancelled",
+  "run_cancelled",
+  "task_result",
+  "run_completed",
+  "error",
+  "run_failed",
+]);
+
+interface AuditEventPresentation {
+  label: string;
+  message: string;
+  context?: string;
+}
 
 export interface ChatTurn {
   id: string;
@@ -119,6 +145,99 @@ function formatDuration(value: number): string {
   return `${paddedMinutes}:${paddedSeconds}`;
 }
 
+function dataString(event: MonitorMessage, key: string): string | null {
+  const value = event.data[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function nestedDataString(
+  event: MonitorMessage,
+  parentKey: string,
+  key: string,
+): string | null {
+  const parent = event.data[parentKey];
+  if (!parent || typeof parent !== "object") return null;
+  const value = (parent as Record<string, unknown>)[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function auditEvents(events: MonitorMessage[]): MonitorMessage[] {
+  return uniqueEvents(events).filter((event) => AUDIT_EVENT_NAMES.has(event.event));
+}
+
+function nodeLabel(node: string | null): string {
+  if (!node) return "执行节点";
+  if (node === "model") return "Agent 推理";
+  if (node === "tools") return "工具执行";
+  if (node.includes("before_agent")) return "上下文准备";
+  if (node.includes("after_model")) return "输出检查";
+  return node.replaceAll("_", " ");
+}
+
+function presentAuditEvent(event: MonitorMessage): AuditEventPresentation {
+  if (event.event === "run_queued") {
+    return { label: "任务排队", message: "任务已进入队列，等待 Agent Worker 领取" };
+  }
+  if (event.event === "run_started") {
+    return { label: "Agent 启动", message: "Agent Worker 已领取任务，正在初始化执行上下文" };
+  }
+  if (event.event === "run_retrying") {
+    const attempt = event.data.attempt;
+    const suffix = typeof attempt === "number" ? `（第 ${attempt + 1} 次）` : "";
+    return { label: "自动重试", message: `基础设施暂时不可用，Agent 正在重新调度${suffix}` };
+  }
+  if (event.event === "activity") {
+    return { label: "Agent 动作", message: event.message };
+  }
+  if (event.event === "session_created") {
+    return { label: "工作区", message: "会话工作区已准备完成，Agent 正在分析任务" };
+  }
+  if (event.event === "model_call") {
+    return { label: "Agent 推理", message: "Agent 已完成本轮推理，正在确定下一步动作" };
+  }
+  if (event.event === "node_completed") {
+    return {
+      label: "执行节点",
+      message: `${nodeLabel(dataString(event, "node"))}已完成，正在进入下一阶段`,
+    };
+  }
+  if (event.event === "assistant_call") {
+    const assistantName = dataString(event, "assistant_name") || "子智能体";
+    const description = nestedDataString(event, "args", "description");
+    return {
+      label: "子智能体",
+      message: `正在调度子智能体 · ${assistantName}`,
+      context: description || undefined,
+    };
+  }
+  if (event.event === "tool_start") {
+    const toolName = dataString(event, "tool_name") || "业务工具";
+    return { label: "工具调用", message: `正在执行工具 · ${toolName}` };
+  }
+  if (event.event === "retryable_error") {
+    return { label: "连接恢复", message: "基础设施连接暂时不可用，Agent 正在准备自动重试" };
+  }
+  if (event.event === "cancel_requested") {
+    return { label: "取消任务", message: "已收到停止请求，正在安全结束当前执行" };
+  }
+  if (event.event === "task_cancelled" || event.event === "run_cancelled") {
+    return { label: "任务已停止", message: "Agent 已停止执行并释放运行资源" };
+  }
+  if (event.event === "task_result") {
+    return { label: "生成结果", message: "Agent 已形成最终答复，正在保存会话记录" };
+  }
+  if (event.event === "run_completed") {
+    return { label: "执行完成", message: "任务结果已保存，可继续在当前会话中提问" };
+  }
+  if (event.event === "run_failed") {
+    return { label: "执行失败", message: "任务重试次数已耗尽，执行已安全结束" };
+  }
+  if (event.event === "error") {
+    return { label: "执行异常", message: event.message };
+  }
+  return { label: "Agent 事件", message: event.message };
+}
+
 function getLastEventTime(
   events: MonitorMessage[],
   eventName?: string,
@@ -156,7 +275,7 @@ function EventIcon({ event }: { event: string }) {
   if (event === "activity") {
     return <ClockCircleOutlined aria-hidden />;
   }
-  if (event === "run_queued" || event === "run_started") {
+  if (event === "run_queued" || event === "run_started" || event === "run_retrying") {
     return <ClockCircleOutlined aria-hidden />;
   }
   if (event === "node_completed") {
@@ -171,19 +290,16 @@ function EventIcon({ event }: { event: string }) {
   if (event === "session_created") {
     return <FileSearchOutlined aria-hidden />;
   }
-  if (event === "task_result") {
+  if (event === "task_result" || event === "run_completed") {
     return <CheckCircleOutlined aria-hidden />;
   }
-  if (event === "run_completed") {
-    return <CheckCircleOutlined aria-hidden />;
-  }
-  if (event === "task_cancelled") {
+  if (event === "task_cancelled" || event === "run_cancelled") {
     return <StopOutlined aria-hidden />;
   }
   if (event === "cancel_requested") {
     return <StopOutlined aria-hidden />;
   }
-  if (event === "error") {
+  if (event === "error" || event === "run_failed" || event === "retryable_error") {
     return <CloseCircleOutlined aria-hidden />;
   }
   return <ClockCircleOutlined aria-hidden />;
@@ -200,20 +316,10 @@ function FileIcon({ name }: { name: string }) {
 }
 
 function describeCurrentActivity(events: MonitorMessage[], result: string): string {
-  const latest = events[events.length - 1];
+  const visibleEvents = auditEvents(events);
+  const latest = visibleEvents[visibleEvents.length - 1];
   if (!latest) return result ? "正在流式生成与整理最终回答" : "正在接收任务并准备执行环境";
-  if (latest.event === "activity" || latest.event === "tool_start" || latest.event === "assistant_call") {
-    return latest.message;
-  }
-  if (latest.event === "cancel_requested") return "正在停止当前任务";
-  if (latest.event === "node_completed") {
-    const node = typeof latest.data.node === "string" ? latest.data.node : "当前";
-    return `${node} 节点已完成，正在决定下一步`;
-  }
-  if (latest.event === "model_call") return "模型推理已完成，正在整理执行结果";
-  if (latest.event === "session_created") return "执行工作区已就绪，正在分析任务";
-  if (latest.event === "run_started" || latest.event === "run_queued") return latest.message;
-  return result ? "正在流式生成与整理最终回答" : "正在继续执行任务";
+  return presentAuditEvent(latest).message;
 }
 
 function ThinkingTimeline({
@@ -225,6 +331,7 @@ function ThinkingTimeline({
   isRunning: boolean;
   result: string;
 }) {
+  const visibleEvents = auditEvents(events);
   const timelineRef = useRef<HTMLOListElement | null>(null);
   const timelineFollowRef = useRef(true);
 
@@ -239,15 +346,15 @@ function ThinkingTimeline({
         timelineNode.scrollTop = timelineNode.scrollHeight;
       });
     }
-  }, [events.length]);
+  }, [visibleEvents.length]);
 
-  if (events.length === 0) {
+  if (visibleEvents.length === 0) {
     return (
       <>
         {isRunning ? (
           <div className="current-activity" aria-live="polite">
             <span className="current-activity-pulse" aria-hidden />
-            <div><small>当前步骤</small><strong>{describeCurrentActivity(events, result)}</strong></div>
+            <div><small>AGENT 当前动作</small><strong>{describeCurrentActivity(events, result)}</strong></div>
           </div>
         ) : null}
         <div className="thinking-empty">
@@ -263,7 +370,7 @@ function ThinkingTimeline({
       {isRunning ? (
         <div className="current-activity" aria-live="polite">
           <span className="current-activity-pulse" aria-hidden />
-          <div><small>当前步骤</small><strong>{describeCurrentActivity(events, result)}</strong></div>
+          <div><small>AGENT 当前动作</small><strong>{describeCurrentActivity(events, result)}</strong></div>
         </div>
       ) : null}
       <ol
@@ -274,29 +381,31 @@ function ThinkingTimeline({
         }}
         ref={timelineRef}
       >
-        {events.map((event, index) => (
-          <li
-            className={`thinking-event thinking-event--${event.event}`}
-            key={`${event.timestamp}-${index}`}
-          >
-            <span className="thinking-event-icon">
-              <EventIcon event={event.event} />
-            </span>
-            <div>
-              <div className="thinking-event-meta">
-                <span>{event.event}</span>
-                <time dateTime={event.timestamp}>
-                  {formatTime(event.timestamp)}
-                </time>
+        {visibleEvents.map((event, index) => {
+          const presentation = presentAuditEvent(event);
+          return (
+            <li
+              className={`thinking-event thinking-event--${event.event}`}
+              key={`${event.timestamp}-${index}`}
+            >
+              <span className="thinking-event-icon">
+                <EventIcon event={event.event} />
+              </span>
+              <div>
+                <div className="thinking-event-meta">
+                  <span>{presentation.label}</span>
+                  <time dateTime={event.timestamp}>
+                    {formatTime(event.timestamp)}
+                  </time>
+                </div>
+                <p>{presentation.message}</p>
+                {presentation.context ? (
+                  <small className="thinking-event-context">{presentation.context}</small>
+                ) : null}
               </div>
-              <p>{event.message}</p>
-              {event.event === "assistant_call" ||
-              event.event === "tool_start" ? (
-                <code>{JSON.stringify(event.data)}</code>
-              ) : null}
-            </div>
-          </li>
-        ))}
+            </li>
+          );
+        })}
       </ol>
     </>
   );
@@ -411,6 +520,7 @@ function AssistantMessage({
   }, [isRunning]);
 
   const durationLabel = getThinkingDuration(events, timestamp, isRunning, now);
+  const visibleAuditEvents = auditEvents(events);
   const isCancelled = events.some(
     (event) => event.event === "task_cancelled" || event.event === "run_cancelled"
   );
@@ -437,14 +547,14 @@ function AssistantMessage({
 
         <details
           className="thinking-block"
-          open={isRunning || events.length > 0}
+          open={isRunning || visibleAuditEvents.length > 0}
         >
           <summary>
             <span>
               <BranchesOutlined aria-hidden />
               可审计执行过程
             </span>
-            <strong>{events.length}</strong>
+            <strong>{visibleAuditEvents.length}</strong>
           </summary>
           <ThinkingTimeline events={events} isRunning={isRunning} result={result} />
         </details>

@@ -120,20 +120,59 @@ def _canonical_thread_id(value: str) -> str:
         raise HTTPException(status_code=400, detail="thread_id 必须是合法 UUID") from error
 
 
-@app.get("/health")
-async def health():
+async def _readiness_payload() -> tuple[bool, dict]:
     from app.rag.db import database
 
-    healthy = await database.health()
-    redis_healthy = await broker.health() if execution_settings.distributed else None
-    if not healthy or (execution_settings.distributed and not redis_healthy):
-        raise HTTPException(status_code=503, detail="database or Redis unavailable")
-    return {
-        "status": "ok",
-        "database": "ok",
-        "redis": "ok" if redis_healthy else ("disabled" if redis_healthy is None else "error"),
+    rag_healthy, chat_healthy = await asyncio.gather(
+        database.health(), chat_database.health()
+    )
+    redis_healthy: bool | None = None
+    live_workers: int | None = None
+    queue = {"pending": 0, "lag": 0, "consumers": 0, "dead_letters": 0}
+    if execution_settings.distributed:
+        try:
+            redis_healthy = await broker.health()
+            if redis_healthy:
+                live_workers, queue = await asyncio.gather(
+                    broker.live_worker_count(), broker.queue_stats()
+                )
+        except Exception:
+            redis_healthy = False
+            live_workers = 0
+    ready = bool(
+        rag_healthy
+        and chat_healthy
+        and (
+            not execution_settings.distributed
+            or (redis_healthy and live_workers and live_workers > 0)
+        )
+    )
+    return ready, {
+        "status": "ok" if ready else "degraded",
+        "database": "ok" if rag_healthy and chat_healthy else "error",
+        "redis": (
+            "ok"
+            if redis_healthy
+            else ("disabled" if redis_healthy is None else "error")
+        ),
+        "agent_workers": live_workers,
+        "queue": queue,
         "execution_mode": execution_settings.mode,
     }
+
+
+@app.get("/health/live")
+async def liveness():
+    return {"status": "ok"}
+
+
+@app.get("/health")
+@app.get("/health/ready")
+async def readiness():
+    ready, payload = await _readiness_payload()
+    if not ready:
+        raise HTTPException(status_code=503, detail=payload)
+    return payload
 
 
 @app.post("/api/task")
@@ -147,12 +186,30 @@ async def run_task(
     HTTP 请求只负责创建后台协程并立即返回，后续执行轨迹、子智能体调用和最终
     答案都会由 monitor 通过 `/ws/{thread_id}` 推送给同一会话的前端。
     """
-    thread_id = _canonical_thread_id(request.thread_id) if request.thread_id else str(uuid.uuid4())
+    thread_id = (
+        _canonical_thread_id(request.thread_id)
+        if request.thread_id
+        else str(uuid.uuid4())
+    )
     tenant_id = x_tenant_id or rag_settings.default_tenant_id
     try:
         tenant_id = str(uuid.UUID(tenant_id))
     except ValueError as error:
         raise HTTPException(status_code=400, detail="X-Tenant-ID 必须是合法 UUID") from error
+
+    if execution_settings.distributed:
+        try:
+            live_workers = await broker.live_worker_count()
+        except Exception as error:
+            raise HTTPException(
+                status_code=503,
+                detail="执行队列暂不可用，请稍后重试",
+            ) from error
+        if live_workers < 1:
+            raise HTTPException(
+                status_code=503,
+                detail="当前没有健康的 Agent Worker，任务尚未创建",
+            )
 
     stale_run_ids = await chat_database.finalize_stale_cancellations(thread_id)
     if execution_settings.distributed:

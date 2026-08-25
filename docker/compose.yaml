@@ -21,6 +21,7 @@ services:
       context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
+    init: true
     env_file: ../.env
     environment:
       RUN_EXECUTION_MODE: distributed
@@ -39,7 +40,7 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 20
@@ -53,6 +54,8 @@ services:
       context: ..
       dockerfile: Dockerfile
     restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
     command: ["python", "-m", "app.agent.worker"]
     env_file: ../.env
     environment:
@@ -64,6 +67,10 @@ services:
       BUSINESS_DB_SCHEMA: business
       RAG_STORAGE_DIR: /data/rag
       AGENT_WORKER_CONCURRENCY: ${AGENT_WORKER_CONCURRENCY:-2}
+      AGENT_WORKER_REGISTRY_TTL_SECONDS: ${AGENT_WORKER_REGISTRY_TTL_SECONDS:-45}
+      AGENT_WORKER_SHUTDOWN_GRACE_SECONDS: ${AGENT_WORKER_SHUTDOWN_GRACE_SECONDS:-30}
+      AGENT_RUN_MAX_ATTEMPTS: ${AGENT_RUN_MAX_ATTEMPTS:-3}
+      AGENT_RUN_RETRY_BASE_SECONDS: ${AGENT_RUN_RETRY_BASE_SECONDS:-1}
     volumes:
       - rag-data:/data
       - agent-output:/workspace/app/output
@@ -71,6 +78,12 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.agent.worker_health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
     mem_limit: 1800m
     networks: [app, data]
     extra_hosts:

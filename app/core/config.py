@@ -41,6 +41,17 @@ class ExecutionSettings:
     worker_claim_idle_ms: int
     worker_heartbeat_seconds: float
     worker_cancel_poll_seconds: float
+    worker_registry_ttl_seconds: int
+    worker_shutdown_grace_seconds: float
+    run_max_attempts: int
+    run_retry_base_seconds: float
+    postgres_pool_timeout_seconds: float
+    postgres_pool_max_lifetime_seconds: float
+    postgres_pool_max_idle_seconds: float
+    postgres_pool_reconnect_timeout_seconds: float
+    postgres_connect_timeout_seconds: int
+    checkpoint_pool_min_size: int
+    checkpoint_pool_max_size: int
 
     @classmethod
     def from_env(cls) -> "ExecutionSettings":
@@ -56,7 +67,7 @@ class ExecutionSettings:
         if not prefix:
             raise ValueError("REDIS_KEY_PREFIX cannot be empty")
 
-        return cls(
+        result = cls(
             mode=mode,
             redis_url=redis_url,
             redis_key_prefix=prefix,
@@ -86,7 +97,48 @@ class ExecutionSettings:
             worker_cancel_poll_seconds=_float_env(
                 "AGENT_CANCEL_POLL_SECONDS", 0.5, 0.1, 5
             ),
+            worker_registry_ttl_seconds=_int_env(
+                "AGENT_WORKER_REGISTRY_TTL_SECONDS", 45, 10, 600
+            ),
+            worker_shutdown_grace_seconds=_float_env(
+                "AGENT_WORKER_SHUTDOWN_GRACE_SECONDS", 30, 1, 300
+            ),
+            run_max_attempts=_int_env("AGENT_RUN_MAX_ATTEMPTS", 3, 1, 10),
+            run_retry_base_seconds=_float_env(
+                "AGENT_RUN_RETRY_BASE_SECONDS", 1, 0.1, 30
+            ),
+            postgres_pool_timeout_seconds=_float_env(
+                "POSTGRES_POOL_TIMEOUT_SECONDS", 15, 1, 120
+            ),
+            postgres_pool_max_lifetime_seconds=_float_env(
+                "POSTGRES_POOL_MAX_LIFETIME_SECONDS", 1800, 60, 86400
+            ),
+            postgres_pool_max_idle_seconds=_float_env(
+                "POSTGRES_POOL_MAX_IDLE_SECONDS", 300, 10, 3600
+            ),
+            postgres_pool_reconnect_timeout_seconds=_float_env(
+                "POSTGRES_POOL_RECONNECT_TIMEOUT_SECONDS", 30, 1, 600
+            ),
+            postgres_connect_timeout_seconds=_int_env(
+                "POSTGRES_CONNECT_TIMEOUT_SECONDS", 10, 1, 120
+            ),
+            checkpoint_pool_min_size=_int_env(
+                "CHECKPOINT_POOL_MIN_SIZE", 1, 1, 16
+            ),
+            checkpoint_pool_max_size=_int_env(
+                "CHECKPOINT_POOL_MAX_SIZE", 4, 1, 32
+            ),
         )
+        if result.worker_registry_ttl_seconds <= result.worker_heartbeat_seconds * 2:
+            raise ValueError(
+                "AGENT_WORKER_REGISTRY_TTL_SECONDS must exceed twice "
+                "AGENT_WORKER_HEARTBEAT_SECONDS"
+            )
+        if result.checkpoint_pool_min_size > result.checkpoint_pool_max_size:
+            raise ValueError(
+                "CHECKPOINT_POOL_MIN_SIZE cannot exceed CHECKPOINT_POOL_MAX_SIZE"
+            )
+        return result
 
     @property
     def distributed(self) -> bool:

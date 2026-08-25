@@ -130,6 +130,10 @@ class ToolMonitor:
         """
         return self.buffers.pop(thread_id, [])
 
+    def snapshot(self, thread_id: str) -> list[dict[str, Any]]:
+        """Copy buffered events without removing them before an atomic DB commit."""
+        return list(self.buffers.get(thread_id, []))
+
     def report_tool(
         self,
         tool_name: str,

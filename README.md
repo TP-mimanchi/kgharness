@@ -190,6 +190,16 @@ docker compose --env-file .env -f docker/compose.yaml up -d --build
 
 这会启动 PostgreSQL、FastAPI、Agent Worker、RAG 入库 Worker 和前端；Redis 使用 `.env` 中配置的远程实例。
 
+生产环境建议至少运行两个 Agent Worker；它们可以安全竞争同一 Redis
+Consumer Group，PostgreSQL 中的 Run 租约负责防止重复执行：
+
+```bash
+docker compose --env-file .env -f docker/compose.yaml up -d --build --scale agent-worker=2
+```
+
+完整的高可用拓扑、重试语义、健康检查和告警阈值见
+[`docs/enterprise-runtime.md`](docs/enterprise-runtime.md)。
+
 ### 7. 本地分别启动（开发模式）
 
 
@@ -212,6 +222,8 @@ uv run python -m app.rag.worker
 | `GET /api/files`                    | 列出当前会话输出目录中的生成文件       |
 | `GET /api/download`                 | 下载输出目录中的文件                   |
 | `WebSocket /ws/{thread_id}`         | 仅供 `local` 模式兼容的实时事件通道     |
+| `GET /health/live`                  | 进程存活探针，不检查外部依赖             |
+| `GET /health/ready`                 | PostgreSQL、Redis、Worker 与队列就绪探针  |
 
 ### 8. 启动前端开发服务器
 

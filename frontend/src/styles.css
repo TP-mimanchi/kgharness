@@ -1051,17 +1051,21 @@ textarea {
   margin-top: 1px;
 }
 
-.thinking-event--model_call .thinking-event-icon {
+.thinking-event--model_call .thinking-event-icon,
+.thinking-event--run_started .thinking-event-icon {
   background: rgba(0, 122, 255, 0.12);
   color: var(--blue);
 }
 
-.thinking-event--activity .thinking-event-icon {
+.thinking-event--activity .thinking-event-icon,
+.thinking-event--run_completed .thinking-event-icon {
   background: rgba(52, 199, 89, .13);
   color: var(--green-deep);
 }
 
-.thinking-event--cancel_requested .thinking-event-icon {
+.thinking-event--cancel_requested .thinking-event-icon,
+.thinking-event--run_queued .thinking-event-icon,
+.thinking-event--run_retrying .thinking-event-icon {
   background: rgba(255, 149, 0, .13);
   color: #d07800;
 }
@@ -1076,17 +1080,21 @@ textarea {
   color: var(--teal-deep);
 }
 
-.thinking-event--task_result .thinking-event-icon {
+.thinking-event--task_result .thinking-event-icon,
+.thinking-event--node_completed .thinking-event-icon {
   background: rgba(52, 199, 89, 0.14);
   color: var(--green-deep);
 }
 
-.thinking-event--task_cancelled .thinking-event-icon {
+.thinking-event--task_cancelled .thinking-event-icon,
+.thinking-event--run_cancelled .thinking-event-icon {
   background: rgba(255, 149, 0, 0.14);
   color: #e08600;
 }
 
-.thinking-event--error .thinking-event-icon {
+.thinking-event--error .thinking-event-icon,
+.thinking-event--run_failed .thinking-event-icon,
+.thinking-event--retryable_error .thinking-event-icon {
   background: rgba(255, 59, 48, 0.12);
   color: var(--red);
 }
@@ -1122,6 +1130,14 @@ textarea {
   margin: 0;
   font-size: 12.5px;
   line-height: 1.55;
+}
+
+.thinking-event-context {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .thinking-event code {
