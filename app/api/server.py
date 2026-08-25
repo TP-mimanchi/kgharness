@@ -47,6 +47,7 @@ from app.core.config import settings as execution_settings
 from app.core.redis import TERMINAL_RUN_STATUSES, broker
 from app.rag.config import settings as rag_settings
 from app.services.agent_execution import execute_run
+from app.services.run_cancellation import request_distributed_cancellation
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -236,9 +237,12 @@ async def cancel_task(thread_id: str):
         raise HTTPException(status_code=404, detail="任务不存在或已结束")
     run_id = str(active_run["id"])
     if execution_settings.distributed:
-        await broker.request_cancel(run_id)
-        await chat_database.update_run_status(run_id, "cancelling")
-        return {"status": "cancelling", "thread_id": thread_id, "run_id": run_id}
+        status = await request_distributed_cancellation(
+            run_id=run_id,
+            thread_id=thread_id,
+            current_status=str(active_run["status"]),
+        )
+        return {"status": status, "thread_id": thread_id, "run_id": run_id}
 
     task = active_tasks.get(thread_id)
     if not task or task.done():
@@ -270,9 +274,13 @@ async def cancel_run(run_id: str):
     if run["status"] in TERMINAL_RUN_STATUSES:
         raise HTTPException(status_code=409, detail="Run 已结束")
     if execution_settings.distributed:
-        await broker.request_cancel(run_id)
-        await chat_database.update_run_status(run_id, "cancelling")
-        return {"status": "cancelling", "run_id": run_id, "thread_id": str(run["conversation_id"])}
+        thread_id = str(run["conversation_id"])
+        status = await request_distributed_cancellation(
+            run_id=run_id,
+            thread_id=thread_id,
+            current_status=str(run["status"]),
+        )
+        return {"status": status, "run_id": run_id, "thread_id": thread_id}
 
     thread_id = str(run["conversation_id"])
     task = active_tasks.get(thread_id)

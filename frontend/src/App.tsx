@@ -305,7 +305,11 @@ export default function App() {
         files: lastTurn?.files ?? [],
         result: lastTurn?.result ?? "",
         isRunning: backendIsRunning,
-        sessionPath: restoredPath
+        sessionPath: restoredPath,
+        runId:
+          backendIsRunning && response.active_run?.execution_mode === "distributed"
+            ? response.active_run.id
+            : undefined
       });
       setTurns(restoredTurns);
       setQuery("");

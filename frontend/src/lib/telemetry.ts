@@ -7,11 +7,11 @@ function nestedString(value: unknown, key: string): string | null {
 }
 
 export function eventIdentity(event: MonitorMessage): string {
-  if (event.event_id) return event.event_id;
   const callId = nestedString(event.data, "call_id")
     || nestedString(event.data, "tool_call_id")
     || nestedString(event.data.args, "tool_call_id");
   if (callId) return `${event.run_id || event.thread_id || "run"}:${event.event}:${callId}`;
+  if (event.event_id) return event.event_id;
   return [
     event.run_id || event.thread_id || "run",
     event.event,

@@ -59,13 +59,14 @@ export function useDeepAgentSession() {
         result?: string;
         isRunning?: boolean;
         sessionPath?: string;
+        runId?: string;
       }
     ) => {
       storeThreadId(nextThreadId);
       setThreadId(nextThreadId);
       eventSourceRef.current?.close();
-      setCurrentRunId("");
-      setTransport("websocket");
+      setCurrentRunId(seed?.runId ?? "");
+      setTransport(seed?.runId ? "sse" : "websocket");
       // 恢复历史会话时用该会话最后一轮的数据做种子：
       // 后续文件轮询等触发的同步 effect 写回的是相同内容，不会覆盖恢复结果
       setEvents(seed?.events ?? []);

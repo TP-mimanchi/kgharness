@@ -157,6 +157,7 @@ export interface ConversationMessagesResponse {
   active_run?: {
     id: string;
     status: string;
+    execution_mode?: "local" | "distributed" | string;
   } | null;
 }
 

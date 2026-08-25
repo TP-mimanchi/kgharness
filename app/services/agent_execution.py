@@ -68,7 +68,19 @@ def terminal_status(events: list[dict[str, Any]], default: str = "completed") ->
 async def _cancel_before_start(
     *, run_id: str, thread_id: str, worker_id: str
 ) -> str:
-    await chat_database.update_run_status(run_id, "cancelled", worker_id=worker_id)
+    changed = await chat_database.update_run_status(
+        run_id, "cancelled", worker_id=worker_id
+    )
+    if not changed:
+        current = await chat_database.get_run(run_id)
+        current_status = str(current["status"]) if current else "missing"
+        if current_status in TERMINAL_RUN_STATUSES:
+            if broker.enabled:
+                await broker.set_status(
+                    run_id, current_status, worker_id=worker_id
+                )
+                await broker.clear_active_run(thread_id, run_id)
+            return current_status
     if broker.enabled:
         await broker.set_status(run_id, "cancelled", worker_id=worker_id)
         await broker.publish_event(

@@ -15,6 +15,7 @@ from app.api.task_registry import active_tasks, forget_task
 from app.chat.db import database
 from app.core.config import settings as execution_settings
 from app.core.redis import TERMINAL_RUN_STATUSES, broker
+from app.services.run_cancellation import request_distributed_cancellation
 
 router = APIRouter(prefix="/api/chats", tags=["chat-history"])
 
@@ -39,8 +40,13 @@ async def _cancel_active_task(thread_id: str) -> None:
 
     run_id = str(active_run["id"])
     if execution_settings.distributed:
-        await broker.request_cancel(run_id)
-        await database.update_run_status(run_id, "cancelling")
+        status = await request_distributed_cancellation(
+            run_id=run_id,
+            thread_id=thread_id,
+            current_status=str(active_run["status"]),
+        )
+        if status == "cancelled":
+            return
         for _ in range(20):
             await asyncio.sleep(0.25)
             current = await database.get_run(run_id)
@@ -83,7 +89,11 @@ async def list_chat_messages(chat_id: str):
     return {
         "messages": messages,
         "active_run": (
-            {"id": str(active_run["id"]), "status": str(active_run["status"])}
+            {
+                "id": str(active_run["id"]),
+                "status": str(active_run["status"]),
+                "execution_mode": execution_settings.mode,
+            }
             if active_run
             else None
         ),

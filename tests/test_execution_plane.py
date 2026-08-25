@@ -8,7 +8,9 @@ import pytest
 from app.core.config import ExecutionSettings
 from app.core.redis import RunBroker
 from app.services.agent_execution import extract_final_answer, terminal_status
-from app.agent.main_agent import _stream_usage
+from app.agent.llm import ModelUsageMonitor, _result_usage
+from app.services.run_cancellation import request_distributed_cancellation
+from app.agent.worker import _execute_claim
 
 
 def test_distributed_mode_requires_redis_url(monkeypatch) -> None:
@@ -52,22 +54,130 @@ def test_run_event_contract_contains_trace_identity() -> None:
     datetime.fromisoformat(event["timestamp"])
 
 
-def test_stream_usage_normalizes_provider_metadata() -> None:
-    class Chunk:
+def test_result_usage_normalizes_provider_metadata() -> None:
+    class Message:
         usage_metadata = {"input_tokens": 120, "output_tokens": 35}
-        response_metadata = {}
+        response_metadata = {"model_name": "qwen-max"}
 
-    assert _stream_usage(Chunk()) == (120, 35)
+    class Generation:
+        message = Message()
+
+    class Result:
+        generations = [[Generation()]]
+        llm_output = None
+
+    assert _result_usage(Result()) == (120, 35, "qwen-max")  # type: ignore[arg-type]
 
 
-def test_stream_usage_supports_openai_token_usage() -> None:
-    class Chunk:
-        usage_metadata = None
-        response_metadata = {
+def test_result_usage_supports_openai_token_usage() -> None:
+    class Result:
+        generations = []
+        llm_output = {
             "token_usage": {"prompt_tokens": 80, "completion_tokens": 20}
         }
 
-    assert _stream_usage(Chunk()) == (80, 20)
+    assert _result_usage(Result()) == (80, 20, None)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_usage_callback_reports_one_model_call(monkeypatch) -> None:
+    reported: list[dict[str, object]] = []
+
+    class Result:
+        generations = []
+        llm_output = {
+            "token_usage": {"prompt_tokens": 80, "completion_tokens": 20},
+            "model_name": "qwen-max",
+        }
+
+    monkeypatch.setattr(
+        "app.agent.llm.monitor.report_model_usage",
+        lambda **kwargs: reported.append(kwargs),
+    )
+    callback = ModelUsageMonitor()
+    await callback.on_llm_end(Result(), run_id=__import__("uuid").uuid4())  # type: ignore[arg-type]
+
+    assert len(reported) == 1
+    assert reported[0]["input_tokens"] == 80
+    assert reported[0]["output_tokens"] == 20
+
+
+@pytest.mark.asyncio
+async def test_queued_distributed_run_is_cancelled_immediately(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def request_cancel(run_id: str) -> None:
+        calls.append(("request_cancel", run_id))
+
+    async def update_run_status(run_id: str, status: str, **_kwargs) -> bool:
+        calls.append(("database_status", status))
+        return True
+
+    async def set_status(run_id: str, status: str, **_kwargs) -> None:
+        calls.append(("redis_status", status))
+
+    async def publish_event(run_id: str, _payload: dict) -> str:
+        calls.append(("publish", run_id))
+        return "1-0"
+
+    async def clear_active_run(thread_id: str, run_id: str) -> None:
+        calls.append(("clear_active", f"{thread_id}:{run_id}"))
+
+    monkeypatch.setattr("app.services.run_cancellation.broker.request_cancel", request_cancel)
+    monkeypatch.setattr("app.services.run_cancellation.database.update_run_status", update_run_status)
+    monkeypatch.setattr("app.services.run_cancellation.broker.set_status", set_status)
+    monkeypatch.setattr("app.services.run_cancellation.broker.publish_event", publish_event)
+    monkeypatch.setattr("app.services.run_cancellation.broker.clear_active_run", clear_active_run)
+
+    status = await request_distributed_cancellation(
+        run_id="run-1",
+        thread_id="thread-1",
+        current_status="queued",
+    )
+
+    assert status == "cancelled"
+    assert ("database_status", "cancelled") in calls
+    assert ("redis_status", "cancelled") in calls
+    assert any(name == "clear_active" for name, _ in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_acks_database_terminal_delivery(monkeypatch) -> None:
+    calls: list[str] = []
+
+    async def get_status(_run_id: str) -> dict[str, str]:
+        return {"status": "cancelling"}
+
+    async def get_run(_run_id: str) -> dict[str, str]:
+        return {"status": "cancelled"}
+
+    async def set_status(_run_id: str, status: str, **_kwargs) -> None:
+        calls.append(f"status:{status}")
+
+    async def clear_active_run(_thread_id: str, _run_id: str) -> None:
+        calls.append("clear")
+
+    async def acknowledge(_message_id: str) -> None:
+        calls.append("ack")
+
+    monkeypatch.setattr("app.agent.worker.broker.get_status", get_status)
+    monkeypatch.setattr("app.agent.worker.chat_database.get_run", get_run)
+    monkeypatch.setattr("app.agent.worker.broker.set_status", set_status)
+    monkeypatch.setattr("app.agent.worker.broker.clear_active_run", clear_active_run)
+    monkeypatch.setattr("app.agent.worker.broker.acknowledge", acknowledge)
+
+    await _execute_claim(
+        "worker-1",
+        "1-0",
+        {
+            "run_id": "run-1",
+            "thread_id": "thread-1",
+            "query": "hello",
+            "tenant_id": "tenant-1",
+        },
+    )
+
+    assert calls == ["status:cancelled", "clear", "ack"]
 
 
 def test_terminal_result_normalization() -> None:

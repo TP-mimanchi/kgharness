@@ -38,8 +38,8 @@ function compact(value: number): string {
   return String(value);
 }
 
-function points(values: number[], width: number, height: number): string {
-  const max = Math.max(...values, 1);
+function points(values: number[], width: number, height: number, maxValue: number): string {
+  const max = Math.max(maxValue, 1);
   const step = values.length > 1 ? width / (values.length - 1) : 0;
   return values.map((value, index) => `${index * step},${height - (value / max) * (height - 14) - 7}`).join(" ");
 }
@@ -51,6 +51,7 @@ export function SessionInsights({ turns, isRunning }: SessionInsightsProps) {
   const visibleData = chartData.length > 0 ? chartData : [{ cumulativeInput: 0, cumulativeOutput: 0 }];
   const inputs = visibleData.map((item) => item.cumulativeInput);
   const outputs = visibleData.map((item) => item.cumulativeOutput);
+  const tokenScaleMax = Math.max(...inputs, ...outputs, 1);
   const totals = usagePoints[usagePoints.length - 1];
   const totalInput = totals?.cumulativeInput ?? 0;
   const totalOutput = totals?.cumulativeOutput ?? 0;
@@ -98,9 +99,9 @@ export function SessionInsights({ turns, isRunning }: SessionInsightsProps) {
             </linearGradient>
           </defs>
           <path className="chart-grid" d="M0 14H260M0 63H260M0 112H260" />
-          <polygon className="chart-area" points={`0,119 ${points(outputs, 260, 112)} 260,119`} />
-          <polyline className="chart-line chart-line--input" points={points(inputs, 260, 112)} />
-          <polyline className="chart-line chart-line--output" points={points(outputs, 260, 112)} />
+          <polygon className="chart-area" points={`0,119 ${points(outputs, 260, 112, tokenScaleMax)} 260,119`} />
+          <polyline className="chart-line chart-line--input" points={points(inputs, 260, 112, tokenScaleMax)} />
+          <polyline className="chart-line chart-line--output" points={points(outputs, 260, 112, tokenScaleMax)} />
         </svg>
         <div className="chart-axis">
           {visibleData.map((_, index) => <span key={index}>{firstVisibleCall + index}</span>)}

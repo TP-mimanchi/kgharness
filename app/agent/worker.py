@@ -9,7 +9,11 @@ import signal
 import socket
 
 from app.agent.main_agent import initialize_main_agent, shutdown_main_agent
-from app.chat.db import initialize_chat_database, shutdown_chat_database
+from app.chat.db import (
+    database as chat_database,
+    initialize_chat_database,
+    shutdown_chat_database,
+)
 from app.core.config import settings
 from app.core.redis import TERMINAL_RUN_STATUSES, broker
 from app.rag.db import initialize_database, shutdown_database
@@ -33,7 +37,16 @@ async def _execute_claim(
     query = payload["query"]
     tenant_id = payload["tenant_id"]
     state = await broker.get_status(run_id)
-    if state.get("status") in TERMINAL_RUN_STATUSES:
+    database_run = await chat_database.get_run(run_id)
+    database_status = str(database_run["status"]) if database_run else "missing"
+    terminal_status = (
+        database_status
+        if database_status in TERMINAL_RUN_STATUSES
+        else state.get("status")
+    )
+    if terminal_status in TERMINAL_RUN_STATUSES:
+        await broker.set_status(run_id, str(terminal_status), worker_id=consumer_name)
+        await broker.clear_active_run(thread_id, run_id)
         await broker.acknowledge(message_id)
         return
 
