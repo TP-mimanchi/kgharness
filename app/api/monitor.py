@@ -95,8 +95,10 @@ class ToolMonitor:
         if run_id:
             broker.publish_event_nowait(run_id, payload)
 
-        # 控制台保底输出，便于无前端场景下观察执行过程
-        print(f"\n[Monitor:{event_type}] {message}")
+        # Token deltas can arrive dozens of times per second. Printing each one
+        # blocks the worker event loop and makes the visible stream lag behind.
+        if event_type not in {"message_delta", "reasoning_delta"}:
+            print(f"\n[Monitor:{event_type}] {message}")
 
     def _send_to_websocket(
         self,
@@ -212,13 +214,9 @@ class ToolMonitor:
 
     def report_reasoning_delta(self, delta: str, *, node: str | None = None) -> None:
         """Report provider-supplied reasoning summaries, never hidden chain-of-thought."""
-        if not delta:
-            return
-        self._emit(
-            "reasoning_delta",
-            "模型正在更新过程摘要",
-            {"delta": delta, "node": node},
-        )
+        # The product intentionally does not render provider reasoning tokens.
+        # Do not send invisible high-frequency deltas through Redis/SSE either.
+        del delta, node
 
     def report_node_completed(self, node: str) -> None:
         """Report a completed LangGraph node for the execution inspector."""

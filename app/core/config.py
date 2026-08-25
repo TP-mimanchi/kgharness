@@ -35,6 +35,8 @@ class ExecutionSettings:
     redis_socket_timeout_seconds: float
     event_stream_max_length: int
     event_ttl_seconds: int
+    event_publish_interval_ms: int
+    event_publish_batch_size: int
     run_ttl_seconds: int
     worker_group: str
     worker_concurrency: int
@@ -79,6 +81,12 @@ class ExecutionSettings:
             ),
             event_ttl_seconds=_int_env(
                 "RUN_EVENT_TTL_SECONDS", 86_400, 300, 2_592_000
+            ),
+            event_publish_interval_ms=_int_env(
+                "RUN_EVENT_PUBLISH_INTERVAL_MS", 15, 5, 100
+            ),
+            event_publish_batch_size=_int_env(
+                "RUN_EVENT_PUBLISH_BATCH_SIZE", 64, 1, 1_000
             ),
             run_ttl_seconds=_int_env(
                 "RUN_STATE_TTL_SECONDS", 604_800, 3_600, 2_592_000

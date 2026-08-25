@@ -12,6 +12,7 @@ import type {
 } from "../types";
 
 const MAX_EVENTS = 120;
+const DELTA_FLUSH_INTERVAL_MS = 20;
 
 function extractString(data: Record<string, unknown>, key: string): string | null {
   const value = data[key];
@@ -23,6 +24,9 @@ export function useDeepAgentSession() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimerRef = useRef<number | undefined>(undefined);
   const heartbeatTimerRef = useRef<number | undefined>(undefined);
+  const deltaFlushTimerRef = useRef<number | undefined>(undefined);
+  const pendingDeltaRef = useRef("");
+  const hasVisibleResultRef = useRef(false);
   const uploadedNameSetRef = useRef<Set<string>>(new Set());
   const [threadId, setThreadId] = useState(getStoredThreadId);
   const [currentRunId, setCurrentRunId] = useState("");
@@ -50,6 +54,36 @@ export function useDeepAgentSession() {
     }
   }, []);
 
+  const discardPendingDeltas = useCallback(() => {
+    if (deltaFlushTimerRef.current !== undefined) {
+      window.clearTimeout(deltaFlushTimerRef.current);
+      deltaFlushTimerRef.current = undefined;
+    }
+    pendingDeltaRef.current = "";
+  }, []);
+
+  const queueResultDelta = useCallback((delta: string) => {
+    // Paint the first SSE chunk immediately. Later chunks are coalesced so a fast
+    // provider cannot force React to render once per token.
+    if (!hasVisibleResultRef.current) {
+      hasVisibleResultRef.current = true;
+      setResult((previous) => previous + delta);
+      return;
+    }
+    pendingDeltaRef.current += delta;
+    if (deltaFlushTimerRef.current !== undefined) return;
+    deltaFlushTimerRef.current = window.setTimeout(() => {
+      deltaFlushTimerRef.current = undefined;
+      const buffered = pendingDeltaRef.current;
+      pendingDeltaRef.current = "";
+      if (!buffered) return;
+      // Do not use startTransition here. A continuous token stream can repeatedly
+      // pre-empt low-priority transitions, leaving only the first chunk visible
+      // until the terminal result arrives. The 20 ms batch already bounds renders.
+      setResult((previous) => previous + buffered);
+    }, DELTA_FLUSH_INTERVAL_MS);
+  }, []);
+
   const switchToThread = useCallback(
     (
       nextThreadId: string,
@@ -62,6 +96,7 @@ export function useDeepAgentSession() {
         runId?: string;
       }
     ) => {
+      discardPendingDeltas();
       storeThreadId(nextThreadId);
       setThreadId(nextThreadId);
       eventSourceRef.current?.close();
@@ -73,13 +108,14 @@ export function useDeepAgentSession() {
       setFiles(seed?.files ?? []);
       setSessionPath(seed?.sessionPath ?? "");
       setResult(seed?.result ?? "");
+      hasVisibleResultRef.current = Boolean(seed?.result);
       setLastError("");
       setUploadedItems([]);
       uploadedNameSetRef.current.clear();
       setIsRunning(seed?.isRunning ?? false);
       setIsCancelling(false);
     },
-    []
+    [discardPendingDeltas]
   );
 
   const resetSession = useCallback(() => {
@@ -99,22 +135,24 @@ export function useDeepAgentSession() {
   }, [sessionPath]);
 
   const processMonitorEvent = useCallback((payload: MonitorMessage) => {
-    setLastPongAt(new Date().toISOString());
-
     if (payload.event === "message_delta") {
       const delta = extractString(payload.data, "delta");
       if (delta) {
-        setResult((previous) => previous + delta);
+        queueResultDelta(delta);
       }
       return;
     }
 
+    // Provider reasoning deltas are neither displayed nor audited. Ignoring them
+    // before any state update prevents invisible tokens from re-rendering the app.
+    if (payload.event === "reasoning_delta") return;
+
+    setLastPongAt(new Date().toISOString());
+
     // Reasoning deltas are intentionally not rendered as hidden chain-of-thought.
     // model_usage stays in the data stream for token charts; the conversation card
     // filters it out and renders only auditable Agent lifecycle and action events.
-    if (payload.event !== "reasoning_delta") {
-      setEvents((previous) => [...previous, payload].slice(-MAX_EVENTS));
-    }
+    setEvents((previous) => [...previous, payload].slice(-MAX_EVENTS));
 
     if (payload.event === "session_created") {
       const path = extractString(payload.data, "path");
@@ -124,17 +162,21 @@ export function useDeepAgentSession() {
     }
 
     if (payload.event === "task_result") {
+      discardPendingDeltas();
       const finalResult = extractString(payload.data, "result");
       setResult(finalResult || payload.message);
+      hasVisibleResultRef.current = true;
     }
 
     if (payload.event === "task_cancelled" || payload.event === "run_cancelled") {
+      discardPendingDeltas();
       setResult((previous) => previous || payload.message);
       setIsRunning(false);
       setIsCancelling(false);
     }
 
     if (payload.event === "error" || payload.event === "run_failed") {
+      discardPendingDeltas();
       const detail = extractString(payload.data, "error");
       setLastError(detail || payload.message);
       setIsRunning(false);
@@ -145,7 +187,9 @@ export function useDeepAgentSession() {
       setIsRunning(false);
       setIsCancelling(false);
     }
-  }, []);
+  }, [discardPendingDeltas, queueResultDelta]);
+
+  useEffect(() => () => discardPendingDeltas(), [discardPendingDeltas]);
 
   useEffect(() => {
     if (currentRunId) {
@@ -296,10 +340,12 @@ export function useDeepAgentSession() {
         throw new Error("请输入 KG 任务");
       }
 
+      discardPendingDeltas();
       setIsRunning(true);
       setIsCancelling(false);
       setEvents([]);
       setResult("");
+      hasVisibleResultRef.current = false;
       setLastError("");
       try {
         const response = await startTask(cleanQuery, threadId);
@@ -318,7 +364,7 @@ export function useDeepAgentSession() {
         throw error;
       }
     },
-    [threadId]
+    [discardPendingDeltas, threadId]
   );
 
   const cancelCurrentTask = useCallback(async () => {

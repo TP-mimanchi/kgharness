@@ -12,7 +12,7 @@ import {
   VerticalAlignBottomOutlined
 } from "@ant-design/icons";
 import { Alert, App as AntApp, Button } from "antd";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatComposer } from "./components/ChatComposer";
 import { ConversationHistory } from "./components/ConversationHistory";
 import { ConversationThread } from "./components/ConversationThread";
@@ -114,13 +114,37 @@ export default function App() {
   const [activePage, setActivePage] = useState<"chat" | "knowledge">("chat");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const streamRef = useRef<HTMLElement | null>(null);
+  const scrollFrameRef = useRef<number | undefined>(undefined);
   const autoFollowRef = useRef(true);
   const session = useDeepAgentSession();
 
-  // 恢复历史会话时置 true，跳过一次同步 effect，防止 switchToThread 清空 session 状态后
-  // 把空值写进刚恢复的最后一轮消息
-  const restoreGuardRef = useRef(false);
   const prevIsRunningRef = useRef(session.isRunning);
+
+  // The live SSE result is the source of truth for the current turn. Deriving the
+  // rendered turn avoids a second effect-driven state copy that can miss updates
+  // during submit/thread-switch batching and leave the answer visually frozen.
+  const renderedTurns = useMemo(() => {
+    if (turns.length === 0) return turns;
+    const latestTurn = turns[turns.length - 1];
+    if (latestTurn.threadId !== session.threadId) return turns;
+    return [
+      ...turns.slice(0, -1),
+      {
+        ...latestTurn,
+        events: session.events,
+        files: session.files,
+        isRunning: session.isRunning,
+        result: session.result
+      }
+    ];
+  }, [
+    session.events,
+    session.files,
+    session.isRunning,
+    session.result,
+    session.threadId,
+    turns
+  ]);
 
   const refreshConversations = useCallback(async () => {
     try {
@@ -139,38 +163,34 @@ export default function App() {
     const wasRunning = prevIsRunningRef.current;
     prevIsRunningRef.current = session.isRunning;
     if (wasRunning && !session.isRunning) {
+      // Persist the completed live view into local history before another turn
+      // starts and the session hook resets its per-run state.
+      setTurns((previous) => {
+        if (previous.length === 0) return previous;
+        const latestTurn = previous[previous.length - 1];
+        if (latestTurn.threadId !== session.threadId) return previous;
+        return [
+          ...previous.slice(0, -1),
+          {
+            ...latestTurn,
+            events: session.events,
+            files: session.files,
+            isRunning: false,
+            result: session.result
+          }
+        ];
+      });
       // 任务结束时刷新列表，拿到最新的标题和更新时间
       refreshConversations();
     }
-  }, [refreshConversations, session.isRunning]);
-
-  useEffect(() => {
-    setTurns((previous) => {
-      if (restoreGuardRef.current) {
-        restoreGuardRef.current = false;
-        return previous;
-      }
-
-      if (previous.length === 0) {
-        return previous;
-      }
-
-      const latestTurn = previous[previous.length - 1];
-      if (latestTurn.threadId !== session.threadId) {
-        return previous;
-      }
-
-      const nextLatestTurn = {
-        ...latestTurn,
-        events: session.events,
-        files: session.files,
-        isRunning: session.isRunning,
-        result: session.result
-      };
-
-      return [...previous.slice(0, -1), nextLatestTurn];
-    });
-  }, [session.events, session.files, session.isRunning, session.result, session.threadId]);
+  }, [
+    refreshConversations,
+    session.events,
+    session.files,
+    session.isRunning,
+    session.result,
+    session.threadId
+  ]);
 
   const scrollToLatest = useCallback((behavior: ScrollBehavior = "auto") => {
     autoFollowRef.current = true;
@@ -184,7 +204,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (turns.length === 0) {
+    if (renderedTurns.length === 0) {
       setShowJumpToLatest(false);
       return;
     }
@@ -199,10 +219,20 @@ export default function App() {
       return;
     }
 
-    window.requestAnimationFrame(() => {
+    if (scrollFrameRef.current !== undefined) {
+      window.cancelAnimationFrame(scrollFrameRef.current);
+    }
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = undefined;
       streamNode.scrollTo({ top: streamNode.scrollHeight, behavior: "auto" });
     });
-  }, [turns]);
+    return () => {
+      if (scrollFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(scrollFrameRef.current);
+        scrollFrameRef.current = undefined;
+      }
+    };
+  }, [renderedTurns]);
 
   function handleStreamScroll() {
     const streamNode = streamRef.current;
@@ -296,10 +326,7 @@ export default function App() {
         lastTurn.isRunning = backendIsRunning;
       }
 
-      // 先切 thread，把最后一轮数据作为种子写入 session 状态：
-      // restoreGuard 跳过紧随其后的第一次同步，之后文件轮询触发的同步
-      // 写回的也是种子内容，不会覆盖恢复出来的消息
-      restoreGuardRef.current = true;
+      // 先切 thread，把最后一轮数据作为 live view 的种子。
       session.switchToThread(id, {
         events: lastTurn?.events ?? [],
         files: lastTurn?.files ?? [],
@@ -453,7 +480,8 @@ export default function App() {
           <section className="chat-stream-panel" onScroll={handleStreamScroll} ref={streamRef}>
             <ConversationThread
               onUseExample={setQuery}
-              turns={turns}
+              transport={session.transport}
+              turns={renderedTurns}
             />
           </section>
           {showJumpToLatest ? (
@@ -482,7 +510,7 @@ export default function App() {
           stagedItems={stagedItems}
           uploadedItems={session.uploadedItems}
         />
-      </main><SessionInsights turns={turns} isRunning={session.isRunning} /></div>}
+      </main><SessionInsights turns={renderedTurns} isRunning={session.isRunning} /></div>}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { ArrowDownOutlined, ArrowUpOutlined, BranchesOutlined, ToolOutlined } from "@ant-design/icons";
+import { memo } from "react";
 import type { CSSProperties } from "react";
 import { countEvents, uniqueEvents } from "../lib/telemetry";
 import type { MonitorMessage } from "../types";
@@ -44,7 +45,22 @@ function points(values: number[], width: number, height: number, maxValue: numbe
   return values.map((value, index) => `${index * step},${height - (value / max) * (height - 14) - 7}`).join(" ");
 }
 
-export function SessionInsights({ turns, isRunning }: SessionInsightsProps) {
+function sameInsightInputs(
+  previous: SessionInsightsProps,
+  next: SessionInsightsProps,
+): boolean {
+  if (previous.isRunning !== next.isRunning || previous.turns.length !== next.turns.length) {
+    return false;
+  }
+  return previous.turns.every((turn, index) => {
+    const nextTurn = next.turns[index];
+    return turn.events === nextTurn.events
+      && turn.isRunning === nextTurn.isRunning
+      && (turn.isRunning || turn.result === nextTurn.result);
+  });
+}
+
+export const SessionInsights = memo(function SessionInsights({ turns, isRunning }: SessionInsightsProps) {
   const allEvents = turns.flatMap((turn) => turn.events);
   const usagePoints = cumulativeUsage(allEvents);
   const chartData = usagePoints.slice(-10);
@@ -123,4 +139,4 @@ export function SessionInsights({ turns, isRunning }: SessionInsightsProps) {
       </footer>
     </aside>
   );
-}
+}, sameInsightInputs);

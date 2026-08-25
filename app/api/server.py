@@ -363,6 +363,9 @@ async def stream_run_events(
 
     async def event_generator():
         cursor = last_event_id or "0-0"
+        # Commit the response immediately so EventSource becomes connected before
+        # the first model token arrives. The retry hint also speeds up recovery.
+        yield "retry: 1000\n: connected\n\n"
         while not await request.is_disconnected():
             events = await broker.read_events(run_id, cursor)
             if events:
@@ -389,6 +392,7 @@ async def stream_run_events(
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "Content-Encoding": "identity",
         },
     )
 

@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 
@@ -26,6 +27,7 @@ class RunBroker:
         self.client: Redis | None = None
         self._pending_publications: set[asyncio.Task[Any]] = set()
         self._publication_tails: dict[str, asyncio.Task[Any]] = {}
+        self._publication_queues: dict[str, deque[dict[str, Any]]] = {}
 
     @property
     def enabled(self) -> bool:
@@ -383,26 +385,48 @@ class RunBroker:
         client = self._require_client()
         await client.xack(self.queue_key, settings.worker_group, message_id)
 
-    async def publish_event(self, run_id: str, payload: dict[str, Any]) -> str:
+    async def publish_events(
+        self,
+        run_id: str,
+        payloads: list[dict[str, Any]],
+    ) -> list[str]:
+        """Write an ordered event batch in one Redis round trip."""
+        if not payloads:
+            return []
         client = self._require_client()
-        event_id = await client.xadd(
-            self.event_key(run_id),
-            {"payload": json.dumps(payload, ensure_ascii=False, default=str)},
-            maxlen=settings.event_stream_max_length,
-            approximate=True,
-        )
-        await client.expire(self.event_key(run_id), settings.event_ttl_seconds)
-        return str(event_id)
+        event_key = self.event_key(run_id)
+        # A transaction is unnecessary here: Redis executes a single connection's
+        # pipeline commands in order, while avoiding MULTI/EXEC lowers hot-path cost.
+        async with client.pipeline(transaction=False) as pipeline:
+            for payload in payloads:
+                pipeline.xadd(
+                    event_key,
+                    {"payload": json.dumps(payload, ensure_ascii=False, default=str)},
+                    maxlen=settings.event_stream_max_length,
+                    approximate=True,
+                )
+            pipeline.expire(event_key, settings.event_ttl_seconds)
+            results = await pipeline.execute()
+        return [str(event_id) for event_id in results[:-1]]
+
+    async def publish_event(self, run_id: str, payload: dict[str, Any]) -> str:
+        event_ids = await self.publish_events(run_id, [payload])
+        return event_ids[0]
 
     def publish_event_nowait(self, run_id: str, payload: dict[str, Any]) -> None:
         if self.client is None:
             return
+        queue = self._publication_queues.setdefault(run_id, deque())
+        queue.append(payload)
+        current = self._publication_tails.get(run_id)
+        if current is not None and not current.done():
+            return
         try:
-            previous = self._publication_tails.get(run_id)
-            task = asyncio.create_task(
-                self._publish_after(previous, run_id, payload)
-            )
+            task = asyncio.create_task(self._drain_publications(run_id))
         except RuntimeError:
+            queue.pop()
+            if not queue:
+                self._publication_queues.pop(run_id, None)
             logger.warning("No running event loop; event was not published to Redis")
             return
         self._publication_tails[run_id] = task
@@ -413,15 +437,56 @@ class RunBroker:
             )
         )
 
-    async def _publish_after(
-        self,
-        previous: asyncio.Task[Any] | None,
-        run_id: str,
-        payload: dict[str, Any],
-    ) -> str:
-        if previous is not None:
-            await asyncio.gather(previous, return_exceptions=True)
-        return await self.publish_event(run_id, payload)
+    async def _drain_publications(self, run_id: str) -> None:
+        """Publish immediately once, then coalesce a run's hot token stream."""
+        first_batch = True
+        while True:
+            if not first_batch:
+                await asyncio.sleep(settings.event_publish_interval_ms / 1000)
+
+            queue = self._publication_queues.get(run_id)
+            if not queue:
+                self._publication_queues.pop(run_id, None)
+                return
+
+            payloads: list[dict[str, Any]] = []
+            while queue and len(payloads) < settings.event_publish_batch_size:
+                payloads.append(queue.popleft())
+            await self.publish_events(run_id, self._compact_event_payloads(payloads))
+            first_batch = False
+
+    @staticmethod
+    def _compact_event_payloads(
+        payloads: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Merge only adjacent deltas from the same model message."""
+        compacted: list[dict[str, Any]] = []
+        for payload in payloads:
+            if payload.get("event") != "message_delta" or not compacted:
+                compacted.append(payload)
+                continue
+            previous = compacted[-1]
+            previous_data = previous.get("data") or {}
+            current_data = payload.get("data") or {}
+            same_message = (
+                previous.get("event") == "message_delta"
+                and previous_data.get("node") == current_data.get("node")
+                and previous_data.get("message_id") == current_data.get("message_id")
+            )
+            previous_delta = previous_data.get("delta")
+            current_delta = current_data.get("delta")
+            if (
+                same_message
+                and isinstance(previous_delta, str)
+                and isinstance(current_delta, str)
+            ):
+                compacted[-1] = {
+                    **previous,
+                    "data": {**previous_data, "delta": previous_delta + current_delta},
+                }
+            else:
+                compacted.append(payload)
+        return compacted
 
     def _publication_done(self, run_id: str, task: asyncio.Task[Any]) -> None:
         self._pending_publications.discard(task)

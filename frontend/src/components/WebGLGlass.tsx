@@ -84,6 +84,8 @@ export function WebGLGlass() {
     const resolution = gl.getUniformLocation(program, "resolution");
     const time = gl.getUniformLocation(program, "time");
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const frameInterval = 1000 / 30;
+    let lastDrawAt = -frameInterval;
     let frame = 0;
 
     const resize = () => {
@@ -97,15 +99,23 @@ export function WebGLGlass() {
       }
     };
 
-    const draw = (stamp: number) => {
-      resize();
+    const renderFrame = (stamp: number) => {
       gl.uniform2f(resolution, canvas.width, canvas.height);
       gl.uniform1f(time, stamp * 0.001);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
-      if (!reduceMotion) frame = window.requestAnimationFrame(draw);
     };
 
-    draw(0);
+    const animate = (stamp: number) => {
+      if (stamp - lastDrawAt >= frameInterval) {
+        lastDrawAt = stamp;
+        renderFrame(stamp);
+      }
+      frame = window.requestAnimationFrame(animate);
+    };
+
+    resize();
+    renderFrame(0);
+    if (!reduceMotion) frame = window.requestAnimationFrame(animate);
     window.addEventListener("resize", resize);
     return () => {
       window.cancelAnimationFrame(frame);

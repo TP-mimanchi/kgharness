@@ -15,7 +15,7 @@ import {
   ToolOutlined,
 } from "@ant-design/icons";
 import { Button, Tooltip } from "antd";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { getDownloadUrl } from "../lib/api";
 import { countEvents, uniqueEvents } from "../lib/telemetry";
@@ -64,6 +64,7 @@ export interface ChatTurn {
 interface ConversationThreadProps {
   onUseExample: (prompt: string) => void;
   turns: ChatTurn[];
+  transport: "websocket" | "sse";
 }
 
 const TASK_EXAMPLES = [
@@ -504,7 +505,10 @@ function AssistantMessage({
   isRunning,
   result,
   timestamp,
-}: Pick<ChatTurn, "events" | "files" | "isRunning" | "result" | "timestamp">) {
+  transport,
+}: Pick<ChatTurn, "events" | "files" | "isRunning" | "result" | "timestamp"> & {
+  transport: "websocket" | "sse";
+}) {
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -566,10 +570,10 @@ function AssistantMessage({
               aria-label={isRunning ? "Agent 正在流式生成" : "Agent 已完成"}
             >
               <span aria-hidden />
-              <strong>{isRunning ? "流式生成" : "已完成"}</strong>
-              <small>{isRunning ? "内容持续更新" : `用时 ${durationLabel}`}</small>
+              <strong>{isRunning ? (transport === "sse" ? "SSE 实时输出" : "实时输出") : "已完成"}</strong>
+              <small>{isRunning ? "内容持续到达" : `用时 ${durationLabel}`}</small>
             </div>
-            <MarkdownRenderer content={result} />
+            <MarkdownRenderer content={result} streaming={isRunning} />
           </div>
         ) : (
           <div className="assistant-answer assistant-answer--pending">
@@ -602,6 +606,7 @@ function AssistantMessage({
 export function ConversationThread({
   onUseExample,
   turns,
+  transport,
 }: ConversationThreadProps) {
   if (turns.length === 0) {
     return (
@@ -647,31 +652,44 @@ export function ConversationThread({
   return (
     <div className="conversation-thread" aria-label="聊天消息流">
       {turns.map((turn) => (
-        <div className="conversation-turn" key={turn.id}>
-          <TurnTelemetry events={turn.events} />
-          <article className="chat-message chat-message--user">
-            <div className="message-bubble">
-              <div className="message-meta">
-                <span>你</span>
-                <time dateTime={turn.timestamp}>
-                  {formatTime(turn.timestamp)}
-                </time>
-              </div>
-              <p>{turn.content}</p>
-            </div>
-            <div className="message-avatar message-avatar--user" aria-hidden>
-              你
-            </div>
-          </article>
-          <AssistantMessage
-            events={turn.events}
-            files={turn.files}
-            isRunning={turn.isRunning}
-            result={turn.result}
-            timestamp={turn.timestamp}
-          />
-        </div>
+        <ConversationTurn key={turn.id} turn={turn} transport={transport} />
       ))}
     </div>
   );
 }
+
+const ConversationTurn = memo(function ConversationTurn({
+  turn,
+  transport,
+}: {
+  turn: ChatTurn;
+  transport: "websocket" | "sse";
+}) {
+  return (
+    <div className="conversation-turn">
+      <TurnTelemetry events={turn.events} />
+      <article className="chat-message chat-message--user">
+        <div className="message-bubble">
+          <div className="message-meta">
+            <span>你</span>
+            <time dateTime={turn.timestamp}>
+              {formatTime(turn.timestamp)}
+            </time>
+          </div>
+          <p>{turn.content}</p>
+        </div>
+        <div className="message-avatar message-avatar--user" aria-hidden>
+          你
+        </div>
+      </article>
+      <AssistantMessage
+        events={turn.events}
+        files={turn.files}
+        isRunning={turn.isRunning}
+        result={turn.result}
+        timestamp={turn.timestamp}
+        transport={transport}
+      />
+    </div>
+  );
+});

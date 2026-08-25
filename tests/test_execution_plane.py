@@ -355,14 +355,44 @@ async def test_run_event_publications_preserve_order(monkeypatch) -> None:
     broker.client = object()  # type: ignore[assignment]
     published: list[int] = []
 
-    async def publish(_run_id: str, payload: dict[str, int]) -> str:
-        await asyncio.sleep((3 - payload["sequence"]) * 0.001)
-        published.append(payload["sequence"])
-        return str(payload["sequence"])
+    async def publish_batch(
+        _run_id: str,
+        payloads: list[dict[str, int]],
+    ) -> list[str]:
+        published.extend(payload["sequence"] for payload in payloads)
+        return [str(payload["sequence"]) for payload in payloads]
 
-    monkeypatch.setattr(broker, "publish_event", publish)
+    monkeypatch.setattr(broker, "publish_events", publish_batch)
     for sequence in range(3):
         broker.publish_event_nowait("run-1", {"sequence": sequence})
     await broker.flush()
 
     assert published == [0, 1, 2]
+
+
+def test_run_event_batch_compacts_only_adjacent_message_deltas() -> None:
+    payloads = [
+        {
+            "event": "message_delta",
+            "data": {"delta": "企", "node": "model", "message_id": "m1"},
+        },
+        {
+            "event": "message_delta",
+            "data": {"delta": "业", "node": "model", "message_id": "m1"},
+        },
+        {"event": "tool_start", "data": {"tool_name": "search"}},
+        {
+            "event": "message_delta",
+            "data": {"delta": "级", "node": "model", "message_id": "m1"},
+        },
+    ]
+
+    compacted = RunBroker._compact_event_payloads(payloads)
+
+    assert [payload["event"] for payload in compacted] == [
+        "message_delta",
+        "tool_start",
+        "message_delta",
+    ]
+    assert compacted[0]["data"]["delta"] == "企业"
+    assert compacted[2]["data"]["delta"] == "级"
