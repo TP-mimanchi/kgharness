@@ -135,7 +135,7 @@ export const SessionInsights = memo(function SessionInsights({ turns, isRunning 
 
       <footer className="insights-footer">
         <span>KG RUN STATUS</span>
-        <strong><i />{isRunning ? "知识图谱正在构建" : "等待下一项任务"}</strong>
+        <strong><i />{isRunning ? "知识正在构建" : "等待下一项任务"}</strong>
       </footer>
     </aside>
   );

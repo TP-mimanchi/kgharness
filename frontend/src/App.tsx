@@ -459,7 +459,7 @@ export default function App() {
         <header className="chat-topbar">
           <div>
             <span className="panel-kicker">KG / LIVE GRAPH</span>
-            <h2>知识图谱工作台</h2>
+            <h2>工作台</h2>
           </div>
           <div className="topbar-meta">
             <span>{session.currentRunId ? "RUN" : "THREAD"}</span>
