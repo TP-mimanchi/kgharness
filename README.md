@@ -84,7 +84,7 @@ flowchart LR
 | Web | React 19、TypeScript、Vite、Ant Design、Nginx | 研究工作台与生产静态站点 |
 | 工程化 | uv、pnpm、Docker Compose | 依赖锁定、构建与部署 |
 
-## 5 快速开始
+## 快速开始
 
 ### 环境要求
 
