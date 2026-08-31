@@ -1,265 +1,271 @@
-## 📖 项目介绍
-*目前正在开发中*
+<div align="center">
+  <h1>KG Harness</h1>
+  <p><strong>面向深度研搜任务的可观察、多智能体协作工作台</strong></p>
+  <p>让主智能体规划任务，让专家智能体检索公开网络、结构化数据库与私有知识库，最后交付可下载的研究文档。</p>
 
-在真实研究场景里，用户的问题经常不是一句普通问答可以解决的。
+  <p>
+    <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
+    <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-API-009688?logo=fastapi&logoColor=white">
+    <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-Agent_Runtime-1C3C3C">
+    <img alt="React 19" src="https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111">
+    <img alt="Docker Compose" src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white">
+  </p>
+</div>
 
-比如：
+> [!IMPORTANT]
+> 项目仍在持续优化中，当前更适合个人研究、架构学习和可信网络内的部署，可以进行二次开发。
 
-```text
-结合公开资料、数据库信息和我上传的文档，整理一份机器人行业研究报告，并生成 PDF。
+![KG Harness 工作台](docs/images/kg-harness-workbench.png)
+
+## 为什么做 KG Harness
+
+真实研究任务通常不是一次模型问答，而是一条包含规划、检索、判断、写作和交付的执行链。例如：
+
+> 结合最新公开资料、业务数据库和我上传的行业报告，分析机器人赛道并生成一份带引用的 PDF。
+
+KG Harness 将这类任务拆给不同角色：主智能体负责理解需求、调度与汇总；网络搜索、数据库查询和企业知识库智能体分别获取证据；文件工具读取附件并生成 Markdown / PDF。前端通过可重连 SSE 展示公开执行轨迹、工具调用、Token 用量和最终产物，不展示模型隐藏思维链。
+
+## 核心能力
+
+- **Orchestrator–Workers 多智能体架构**：一名主智能体调度网络搜索、数据库查询和知识库检索三个专家智能体。
+- **多源证据检索**：集成 Tavily、PostgreSQL、pgvector、全文检索、RRF 融合与 reranker，而不是依赖模型记忆直接回答。
+- **从问题到交付物**：读取 PDF、Word、Excel、Markdown 与文本附件，输出 Markdown，并可转换为 PDF。
+- **长任务可观察**：任务队列、节点状态、子智能体/工具调用、增量回答和 Token 统计通过 SSE 实时呈现。
+- **可恢复执行面**：PostgreSQL 持久化会话、Run 与 LangGraph Checkpoint；Redis Streams 承载队列、事件、取消信号和 Worker 注册。
+- **会话隔离**：使用 `thread_id`、`run_id`、`tenant_id` 和独立工作目录隔离上下文、附件与生成文件。
+
+## 系统架构
+
+```mermaid
+flowchart LR
+    U[浏览器] --> N[Nginx + React]
+    N -->|REST / SSE / WebSocket| A[FastAPI]
+    A -->|持久化 Run / 会话| P[(PostgreSQL + pgvector)]
+    A -->|投递任务 / 订阅事件| R[(Redis Streams)]
+    R --> W[Agent Worker]
+    W --> O[主智能体 Orchestrator]
+    O --> S[网络搜索智能体]
+    O --> D[数据库查询智能体]
+    O --> K[知识库智能体]
+    S --> T[Tavily]
+    D --> P
+    K --> P
+    O --> F[附件读取 / Markdown / PDF]
+    W -->|Checkpoint / Run 状态| P
+    W -->|增量事件| R
+    Q[RAG Worker] -->|文档解析 / 向量化| P
 ```
 
-这个任务背后可能包含多类动作：
-
-- 判断需要公开资料、内部数据、私有知识库还是本次上传文件；
-- 去互联网搜索最新新闻、政策、产品或行业资料；
-- 到 PostgreSQL 查询企业结构化业务数据；
-- 到内置 LangGraph RAG 子图查询企业知识库；
-- 读取用户上传的 PDF、Word、Excel、Markdown 或文本文件；
-- 汇总多来源信息，判断资料是否足够；
-- 生成 Markdown 报告，并在需要时转换成 PDF；
-- 把执行过程、最终结果和生成文件实时展示给前端。
-面向个人的多智能体协作的harness agent项目，可以进行深度搜索，文档生成，文件系统管理，可以分工、会查资料、会生成交付物的研究助手。用户只需要提出任务，系统会在后端组织一条可观察的多智能体执行链路。
+一次任务的主链路：
 
 ```text
-用户任务
-  -> FastAPI 接口接收请求
-  -> run_deep_agent 创建会话目录并写入上下文
-  -> 主智能体分析任务
-  -> 分派给网络搜索助手 / 数据库查询助手 / 企业 RAG 助手
-  -> 主智能体汇总多来源信息
-  -> 调用文件工具生成 Markdown / PDF
-  -> Worker 将事件写入 Redis Streams，API 通过 SSE 推送
-  -> 前端展示事件、答案和文件列表
+用户提交任务
+  → FastAPI 持久化 Run
+  → Redis Streams 进入执行队列
+  → Agent Worker 领取任务
+  → 主智能体规划并调度专家智能体
+  → 汇总多源证据并生成交付物
+  → Redis 记录可回放事件，PostgreSQL 收敛最终状态
+  → 前端通过 SSE 展示过程、答案与文件
 ```
 
-## ✨ 项目细节
+更完整的组件边界、失败语义和演进设计见 [企业执行架构](docs/enterprise-architecture.md)；代码导读见 [项目架构与面试指南](docs/project-architecture-and-interview-guide.md)。
 
-- **一主三从的多智能体架构**
-  - 主智能体负责理解任务、规划步骤、调度助手和最终汇总。
-  - 网络搜索助手、数据库查询助手、企业 RAG 助手分别处理不同信息来源。
-- **多来源检索，而不是模型裸答**
-  - `Tavily` 负责互联网公开资料检索。
-  - `PostgreSQL` 负责结构化业务数据、Run 状态和 LangGraph Checkpoint。
-  - `pgvector + 全文检索 + RRF + rerank` 负责企业知识库混合检索。
-  - 上传附件由主智能体通过文件工具读取。
-- **从检索到交付的完整可运行链路**
-  - 不停留在 Prompt 设计，而是会真实调用工具、读取数据、生成 Markdown，并在需要时转换成 PDF。
-- **长任务执行过程可观察**
-  - 可见文本增量、图节点、工具与子智能体调用、取消和终态通过可重放 SSE 推送；不暴露隐藏思维链。
-- **会话级上下文隔离**
-  - 通过 `thread_id` 和 `session_dir` 区分不同任务，`ContextVar` 让深层工具也能拿到当前会话身份和文件目录。
-- **工程化前后端结构清晰**
-  - 基于 `FastAPI + Redis Streams + Agent Worker + React` 组织持久化 Run、异步执行和实时事件。
+## 技术栈
 
+| 领域 | 组件 | 用途 |
+| --- | --- | --- |
+| Agent Runtime | DeepAgents、LangGraph、LangChain | 主/子智能体编排、工具调用、流式执行与 Checkpoint |
+| API | FastAPI、Uvicorn | 任务、会话、上传、下载、RAG 与健康检查接口 |
+| 执行队列 | Redis Streams | Run 队列、Consumer Group、取消、租约和短期事件流 |
+| 数据与检索 | PostgreSQL 17、pgvector、FTS、RRF | 会话与 Run 持久化、向量/稀疏混合检索 |
+| 外部检索 | Tavily | 最新公开网络资料搜索 |
+| 文档处理 | pypdf、python-docx、pandas、ReportLab | 附件解析和 Markdown / PDF 交付 |
+| Web | React 19、TypeScript、Vite、Ant Design、Nginx | 研究工作台与生产静态站点 |
+| 工程化 | uv、pnpm、Docker Compose | 依赖锁定、构建与部署 |
 
+## 5 快速开始
 
-## 🏗️ 系统架构
+### 环境要求
 
-当前企业化执行面已经拆分为 FastAPI、Redis Streams Agent Queue、独立 Agent Worker、
-PostgreSQL/pgvector 和可重连 SSE。完整的组件边界、Run 生命周期与后续安全阶段见
-[`docs/enterprise-architecture.md`](docs/enterprise-architecture.md)。
+- 一台安装了 Docker Engine 与 Docker Compose v2 的 Linux 服务器
+- 建议至少 4 核 CPU、6 GB 内存和 20 GB 可用磁盘
+- 一个 OpenAI 兼容的大模型 API Key
+- 可选：Tavily API Key（不配置时无法使用公开网络搜索）
 
-项目采用 DeepAgents 中典型的 Orchestrator-Workers 模式：主智能体作为调度中心，三个专家助手负责信息获取，文件工具由主智能体直接掌握。
-
-项目围绕两条主线展开：
-
-| 主线             | 做什么                                                       | 涉及模块                                                                  |
-| ---------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| 多智能体深度研搜 | 基于用户任务完成规划、分派、检索、读取附件、汇总和生成交付物 | `DeepAgents` / `LangChain` / `LangGraph` / `Tavily` / `PostgreSQL` / `pgvector` |
-| 前后端实时闭环   | 持久化并调度 Run、重放执行过程、展示增量结果和下载生成文件 | `FastAPI` / `Redis Streams` / `SSE` / `React` / `Vite` |
-
-### 智能体与工具
-
-| 归属           | 能力                                     | 工具                                                          |
-| -------------- | ---------------------------------------- | ------------------------------------------------------------- |
-| 主智能体       | 任务规划、助手调度、结果汇总、文件交付   | `read_file_content`、`generate_markdown`、`convert_md_to_pdf` |
-| 网络搜索助手   | 查询互联网公开信息、新闻、政策和网页资料 | `internet_search`                                             |
-| 数据库查询助手 | 发现表名、预览表结构和样例数据、执行 SQL | `list_sql_tables`、`get_table_data`、`execute_sql_query`      |
-| 企业 RAG 助手 | 对私有文档执行稠密/稀疏混合检索、融合、重排和证据引用 | 内置 `rag_graph` |
-
-
-
-## 🛠️ 项目技术栈
-
-| 模块           | 技术                                             | 作用                                                                          |
-| -------------- | ------------------------------------------------ | ----------------------------------------------------------------------------- |
-| 智能体框架     | `DeepAgents`                                     | 创建主智能体和子智能体，承接长任务、多工具、多助手调度                        |
-| 图与检查点     | `LangGraph` / `AsyncPostgresSaver`               | 提供多智能体运行时和 PostgreSQL 持久化会话检查点                              |
-| 模型与工具抽象 | `LangChain` / `langchain-core`                   | 封装 OpenAI 兼容模型、工具声明和 Agent 调用结构                               |
-| 大模型接入     | OpenAI 兼容接口                                  | 通过 `.env` 中的 `OPENAI_BASE_URL`、`OPENAI_API_KEY`、`LLM_QWEN_MAX` 接入模型 |
-| 网络搜索       | `Tavily`                                         | 为网络搜索助手提供公开资料检索                                                |
-| 结构化数据     | `PostgreSQL` / `psycopg`                         | 为数据库助手提供只读业务查询                                                  |
-| 私有知识库     | `pgvector` / PostgreSQL FTS / RRF / reranker     | 多租户文档入库、混合召回、重排与证据引用                                     |
-| 文件处理       | `pypdf` / `python-docx` / `pandas` / `ReportLab` | 读取上传附件，生成 Markdown，转换 PDF                                         |
-| 后端接口       | `FastAPI` / `Uvicorn`                            | 提供 Run、取消、SSE、RAG、上传与产物接口                                      |
-| 执行传输       | `Redis Streams`                                  | Run 队列、消费者组、租约恢复、取消信号和短期事件流                            |
-| 实时通信       | `SSE`                                            | 按事件 ID 重连回放可见文本增量和可审计执行轨迹                                |
-| 前端           | `React` / `Vite` / `Ant Design` / `Tailwind CSS` | 提供对话式研搜界面、事件流、附件上传和文件下载                                |
-| 依赖管理       | `uv` / `pnpm`                                    | 管理 Python 后端和前端依赖                                                    |
-
-## 📁 项目结构
-
-```text
-deepsearch-agents/
-├── app/
-│   ├── agent/
-│   │   ├── subagents/              # 网络搜索、数据库查询、企业 RAG 三个子智能体
-│   │   ├── worker.py               # Redis Streams Agent Worker
-│   │   ├── llm.py                  # OpenAI 兼容模型初始化
-│   │   ├── main_agent.py           # 主智能体组装与 run_deep_agent 执行入口
-│   │   └── prompts.py              # 读取 app/prompt/prompts.yml
-│   ├── api/
-│   │   ├── context.py              # ContextVar 保存 thread_id 和 session_dir
-│   │   ├── monitor.py              # 工具调用、助手调用、结果和异常事件推送
-│   │   └── server.py               # FastAPI Run、SSE、上传、产物及兼容接口
-│   ├── core/                        # 执行配置与 Redis transport
-│   ├── services/                    # Run 执行、落库与终态收敛
-│   ├── chat/                        # 会话与 agent_runs PostgreSQL 仓储
-│   ├── rag/                         # LangGraph RAG、混合检索、入库与 Worker
-│   ├── prompt/
-│   │   └── prompts.yml             # 主智能体和子智能体提示词配置
-│   ├── tools/                      # Tavily、PostgreSQL、文件读取、Markdown、PDF 工具
-│   ├── utils/                      # 路径解析、Markdown/PDF 底层转换等普通 Python 工具
-│   ├── output/                     # 运行时生成：每个会话的 Markdown、PDF 等产物
-│   └── updated/                    # 运行时生成：用户上传文件的会话暂存目录
-├── docker/
-│   └── compose.yaml                # API、Agent/RAG Worker、PostgreSQL、前端
-├── docs/enterprise-architecture.md # 企业执行面设计与演进边界
-├── examples/                       # DeepAgents 章节示例脚本
-├── frontend/                       # React + Vite 前端项目
-├── tests/                          # 测试目录
-├── .env.example                    # 环境变量示例
-├── pyproject.toml                  # Python 项目依赖声明
-└── uv.lock                         # uv 锁定文件
-```
-
-## 🚀 快速开始
-
-### 1. 准备环境
-
-- Python `3.12`
-- `uv`
-- Docker 与 Docker Compose
-- Node.js 与 `pnpm`
-- 可用的大模型 API Key
-- Tavily API Key
-- 一个启用 pgvector 的 PostgreSQL 17 实例
-- 一个启用 ACL/密码、且仅受信网络可访问的 Redis 实例
-
-
-### 3. 安装后端依赖
+### 1. 获取项目
 
 ```bash
-uv sync
-```
-
-### 4. 配置环境变量
-
-```bash
+git clone https://github.com/TP-mimanchi/kgharness.git
+cd kgharness
 cp .env.example .env
 ```
 
-按本机实际服务和密钥修改 `.env`：
+### 2. 配置密钥
 
-```bash
-# LLM 配置
-OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-OPENAI_API_KEY=你的大模型_API_KEY
-LLM_QWEN_MAX=qwen-max
+编辑 `.env`，至少替换以下值：
 
-# Tavily 配置
-TAVILY_API_KEY=你的_TAVILY_API_KEY
-
-# PostgreSQL / Redis
-RAG_DATABASE_URL=postgresql://kgharness:password@postgres:5432/kgharness
-BUSINESS_DATABASE_URL=postgresql://kgharness:password@postgres:5432/kgharness
-RUN_EXECUTION_MODE=distributed
-REDIS_URL=redis://:password@119.91.123.102:6379/0
+```dotenv
+OPENAI_API_KEY=your-model-api-key
+POSTGRES_PASSWORD=your-long-random-postgres-password
+REDIS_PASSWORD=your-long-random-redis-password
+TAVILY_API_KEY=your-tavily-api-key
 ```
 
-### 5. 准备 PostgreSQL 与 Redis
-
-PostgreSQL 保存 Run、会话、Checkpoint、RAG 元数据和向量；Redis 仅保存队列、租约、取消信号和短期事件。远程 Redis 必须先启用 ACL/密码并限制安全组，禁止匿名暴露 6379。
-
-### 6. 一键启动分布式栈
+可用下面的命令生成数据库密码：
 
 ```bash
-docker compose --env-file .env -f docker/compose.yaml up -d --build
+openssl rand -hex 24
 ```
 
-这会启动 PostgreSQL、FastAPI、Agent Worker、RAG 入库 Worker 和前端；Redis 使用 `.env` 中配置的远程实例。
+如果使用 DashScope，可继续使用默认兼容接口和模型名，或改为 `DASHSCOPE_BASE_URL`、`DASHSCOPE_API_KEY`。其他 OpenAI 兼容服务请同步修改 `OPENAI_BASE_URL` 与 `LLM_QWEN_MAX`。
 
-生产环境建议至少运行两个 Agent Worker；它们可以安全竞争同一 Redis
-Consumer Group，PostgreSQL 中的 Run 租约负责防止重复执行：
+### 3. 一键启动
 
 ```bash
-docker compose --env-file .env -f docker/compose.yaml up -d --build --scale agent-worker=2
+
+docker compose --env-file .env -f docker/compose.yaml up -d
 ```
 
-完整的高可用拓扑、重试语义、健康检查和告警阈值见
-[`docs/enterprise-runtime.md`](docs/enterprise-runtime.md)。
+脚本会检查配置、构建镜像、启动完整服务，并等待 `/health/ready` 就绪。完成后访问：
 
-### 7. 本地分别启动（开发模式）
+```text
+http://<服务器 IP>:80
+```
 
+如需修改端口，在 `.env` 中设置 `APP_PORT`。生产 Compose 不向宿主机暴露 PostgreSQL 和 Redis，只开放 Web 入口。
+
+## 配置说明
+
+| 变量 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `OPENAI_BASE_URL` | 是 | DashScope 兼容地址 | OpenAI 兼容模型接口 |
+| `OPENAI_API_KEY` / `DASHSCOPE_API_KEY` | 是 | — | 模型访问密钥，二选一 |
+| `LLM_QWEN_MAX` | 是 | `deepseek-v4-flash` | 主智能体与专家智能体使用的模型 |
+| `TAVILY_API_KEY` | 否 | — | 公开网络搜索；深度研搜建议配置 |
+| `POSTGRES_PASSWORD` | 是 | — | PostgreSQL 密码 |
+| `REDIS_PASSWORD` | 是 | — | Redis 密码 |
+| `APP_BIND_ADDRESS` | 否 | `0.0.0.0` | Web 服务监听地址 |
+| `APP_PORT` | 否 | `80` | Web 服务宿主机端口 |
+| `AGENT_WORKER_CONCURRENCY` | 否 | `2` | 单个 Agent Worker 并发任务数 |
+| `RAG_EMBEDDING_MODEL` | 否 | `text-embedding-v3` | 知识库向量模型 |
+| `RAG_EMBEDDING_DIMENSION` | 否 | `1024` | 向量维度，必须与模型输出一致 |
+| `RAG_RERANK_MODEL` | 否 | `qwen3-rerank` | 检索重排模型 |
+
+Compose 会为容器注入内部 PostgreSQL/Redis 地址；`.env` 中以 `localhost` 为主机的 `RAG_DATABASE_URL`、`BUSINESS_DATABASE_URL` 与 `REDIS_URL` 用于本地开发。
+
+
+扩容 Agent Worker：
 
 ```bash
-RUN_EXECUTION_MODE=distributed uv run uvicorn app.api.server:app --host 0.0.0.0 --port 8000 --reload
-RUN_EXECUTION_MODE=distributed uv run python -m app.agent.worker
-uv run python -m app.rag.worker
+docker compose --env-file .env -f docker/compose.yaml up -d --scale agent-worker=2
 ```
 
-后端默认接口：
+> [!CAUTION]
+> `docker compose down -v` 会删除 PostgreSQL、Redis、RAG、上传文件和生成文件数据卷。
 
-| 接口                                | 说明                                   |
-| ----------------------------------- | -------------------------------------- |
-| `POST /api/task`                    | 启动一次 DeepAgents 后台任务           |
-| `POST /api/task/{thread_id}/cancel` | 取消指定会话任务                       |
-| `GET /api/runs/{run_id}`            | 查询持久化 Run 状态                    |
-| `GET /api/runs/{run_id}/events`     | 可重连、可回放的 SSE 执行事件流        |
-| `POST /api/runs/{run_id}/cancel`    | 按独立 Run ID 发出分布式取消信号       |
-| `POST /api/upload`                  | 上传一个或多个文件到当前会话           |
-| `GET /api/files`                    | 列出当前会话输出目录中的生成文件       |
-| `GET /api/download`                 | 下载输出目录中的文件                   |
-| `WebSocket /ws/{thread_id}`         | 仅供 `local` 模式兼容的实时事件通道     |
-| `GET /health/live`                  | 进程存活探针，不检查外部依赖             |
-| `GET /health/ready`                 | PostgreSQL、Redis、Worker 与队列就绪探针  |
+## 本地开发
 
-### 8. 启动前端开发服务器
+### 启动基础设施
+
+开发 override 仅把数据库端口绑定到 `127.0.0.1`：
+
+```bash
+cp .env.example .env
+# 编辑 .env 中的模型和数据库密钥
+docker compose --env-file .env \
+  -f docker/compose.yaml \
+  -f docker/compose.dev.yaml \
+  up -d postgres redis
+```
+
+### 启动后端
+
+```bash
+uv sync
+RUN_EXECUTION_MODE=local uv run uvicorn app.api.server:app \
+  --host 0.0.0.0 --port 8000 --reload
+```
+
+`local` 模式在 API 进程内执行 Agent，便于调试。要复现生产队列模式，请将 `RUN_EXECUTION_MODE` 设为 `distributed`，并另行启动 `uv run python -m app.agent.worker`。
+
+### 启动前端
 
 ```bash
 cd frontend
 pnpm install
 pnpm dev
-
-
 ```
 
-前端默认连接：
+打开 `http://localhost:5173`。前端开发服务器默认连接 `http://localhost:8000`。
 
-```text
-API: http://localhost:8000
-SSE: http://localhost:8000/api/runs/{run_id}/events
-```
-
-如需修改，可以在 `frontend/.env.local` 中配置：
+### 运行检查
 
 ```bash
-VITE_API_BASE_URL=http://localhost:8000
+uv run pytest
+cd frontend && pnpm build
 ```
 
+## 主要接口
 
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/task` | 创建研究任务 |
+| `GET` | `/api/runs/{run_id}` | 查询持久化 Run 状态 |
+| `GET` | `/api/runs/{run_id}/events` | 订阅可重连、可回放 SSE 事件 |
+| `POST` | `/api/runs/{run_id}/cancel` | 取消分布式任务 |
+| `POST` | `/api/upload` | 上传会话附件 |
+| `GET` | `/api/files` | 列出生成文件 |
+| `GET` | `/api/download` | 下载生成文件 |
+| `POST` | `/api/v1/knowledge-bases` | 创建知识库 |
+| `POST` | `/api/v1/retrieval/search` | 执行知识库检索 |
+| `GET` | `/health/live` | 进程存活探针 |
+| `GET` | `/health/ready` | PostgreSQL、Redis、Worker 与队列就绪探针 |
 
-### 9. 试几个任务
+启动后可通过 `http://localhost/docs` 查看完整 OpenAPI 文档。
+
+## 项目结构
 
 ```text
-从数据库中查询心血管药品的库存情况，并生成 Markdown 报告。
+kgharness/
+├── app/
+│   ├── agent/                 # 主智能体、专家智能体与 Agent Worker
+│   ├── api/                   # FastAPI、SSE、上传下载与健康检查
+│   ├── chat/                  # 会话消息和持久化 Run 仓储
+│   ├── core/                  # 配置、PostgreSQL 连接池、Redis Streams
+│   ├── rag/                   # 入库 Worker、LangGraph RAG 与混合检索
+│   ├── services/              # 执行、重试、取消和终态收敛
+│   └── tools/                 # 网络、数据库、附件、Markdown、PDF 工具
+├── docker/
+│   ├── compose.yaml           # 可部署的完整生产栈
+│   └── compose.dev.yaml       # 本地基础设施端口 override
+├── docs/                      # 架构与项目文档
+├── frontend/                  # React + Vite 工作台与 Nginx 镜像
+├── tests/                     # 执行面与 RAG 测试
+├── Dockerfile                 # Python API / Worker 共用镜像
+├── deploy.sh                  # 一键部署与运维入口
+└── pyproject.toml             # Python 依赖与测试配置
 ```
 
-```text
-搜索 2026 年 AI 在电商行业的应用趋势，并结合知识库资料生成一份 PDF。
-```
+## 安全边界
 
-```text
-请先读取我上传的行业报告，再结合公开资料整理一份研究摘要。
-```
+- PostgreSQL 与 Redis 默认只位于 Docker 内部网络；不要在公网开放 `5432` 或 `6379`。
+- `.env` 已被忽略，请勿提交模型、搜索、数据库或 Redis 密钥。
+- 数据库查询智能体只接受只读 SQL，但生产环境仍应使用只读数据库账号和独立 schema 权限。
+- 当前项目没有完整的用户登录与授权系统。公网部署前应在反向代理或应用层加入认证，并启用 HTTPS。
+- 上传内容和生成文件会持久化到 Docker volume；请按数据敏感级别配置备份、保留周期和磁盘加密。
+
+## Roadmap
+
+- [ ] 用户认证、团队空间与细粒度租户权限
+- [ ] 引用质量评估、证据覆盖率与研究任务 Evals
+- [ ] 可视化 Agent 拓扑和人工审批节点
+- [ ] OpenTelemetry 指标、链路追踪与告警模板
+- [ ] S3 兼容对象存储和产物生命周期管理
+- [ ] CI 镜像发布与版本化数据库迁移
+
+## 参与贡献
+
+Issue、讨论和 Pull Request 都欢迎。提交代码前请运行后端测试与前端构建，并避免在日志、Fixture 或截图中包含真实密钥和业务数据。
+
+如果这个项目对你理解多智能体深度研搜、可恢复 Agent Runtime 或 RAG 工程化有帮助，欢迎 Star。

@@ -12,8 +12,6 @@ RUN addgroup --system app && adduser --system --ingroup app app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 COPY --chown=app:app app ./app
-COPY --chown=app:app scripts ./scripts
-COPY --chown=app:app README.md ./README.md
 RUN mkdir -p /data /workspace/app/output /workspace/app/updated && chown -R app:app /data /workspace/app
 USER app
 EXPOSE 8000

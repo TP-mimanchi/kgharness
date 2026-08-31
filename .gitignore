@@ -1,8 +1,7 @@
 # See http://help.github.com/ignore-files/ for more about ignoring files.
 
 # compiled output
-/dist
-/tmp
+
 app/output
 app/updated
 /out-tsc
@@ -34,7 +33,7 @@ chrome-profiler-events*.json
 speed-measure-plugin*.json
 
 # IDEs and editors
-/.idea
+.idea
 .project
 .classpath
 .c9/
@@ -64,10 +63,9 @@ testem.log
 # System Files
 .DS_Store
 Thumbs.db
-!uv.lock
+uv.lock
 
 # Keep local reference material private, but version the deployable architecture.
-.env.db
-docker/compose.db.yaml
-local-data
+local-data/
 .claude
+tests

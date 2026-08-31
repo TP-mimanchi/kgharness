@@ -1,8 +1,9 @@
 FROM node:22-alpine AS build
+ARG NPM_REGISTRY=https://mirrors.cloud.tencent.com/npm/
 RUN corepack enable
 WORKDIR /frontend
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm config set registry https://mirrors.cloud.tencent.com/npm/ \
+RUN pnpm config set registry ${NPM_REGISTRY} \
     && pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build

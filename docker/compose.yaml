@@ -1,3 +1,33 @@
+name: kg-harness
+
+x-backend: &backend
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  init: true
+  env_file: ../.env
+  environment: &backend-environment
+    RUN_EXECUTION_MODE: distributed
+    REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-kgharness}
+    RAG_DATABASE_URL: postgresql://${POSTGRES_USER:-kgharness}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kgharness}
+    BUSINESS_DATABASE_URL: postgresql://${POSTGRES_USER:-kgharness}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kgharness}
+    BUSINESS_DB_SCHEMA: ${BUSINESS_DB_SCHEMA:-business}
+    RAG_STORAGE_DIR: /data/rag
+  volumes:
+    - rag-data:/data
+    - agent-output:/workspace/app/output
+    - agent-upload:/workspace/app/updated
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  networks: [app, data]
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
 services:
   postgres:
     image: pgvector/pgvector:pg17
@@ -16,68 +46,50 @@ services:
     mem_limit: 1g
     networks: [data]
 
-  api:
-    build:
-      context: ..
-      dockerfile: Dockerfile
+  redis:
+    image: redis:7.4-alpine
     restart: unless-stopped
-    init: true
-    env_file: ../.env
     environment:
-      RUN_EXECUTION_MODE: distributed
-      REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
-      REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-kgharness}
-      RAG_DATABASE_URL: postgresql://${POSTGRES_USER:-kgharness}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kgharness}
-      BUSINESS_DATABASE_URL: postgresql://${POSTGRES_USER:-kgharness}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kgharness}
-      BUSINESS_DB_SCHEMA: business
-      RAG_STORAGE_DIR: /data/rag
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --appendfsync everysec --requirepass "$$REDIS_PASSWORD"
     volumes:
-      - rag-data:/data
-      - agent-output:/workspace/app/output
-      - agent-upload:/workspace/app/updated
-    depends_on:
-      postgres:
-        condition: service_healthy
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    mem_limit: 384m
+    networks: [data]
+
+  api:
+    <<: *backend
+    environment:
+      <<: *backend-environment
+      RUN_EXECUTION_MODE: distributed
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost,http://127.0.0.1}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 20
+      start_period: 20s
     mem_limit: 1100m
-    networks: [app, data]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   agent-worker:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    restart: unless-stopped
-    init: true
+    <<: *backend
     stop_grace_period: 45s
     command: ["python", "-m", "app.agent.worker"]
-    env_file: ../.env
     environment:
-      RUN_EXECUTION_MODE: distributed
-      REDIS_URL: ${REDIS_URL:?REDIS_URL is required}
-      REDIS_KEY_PREFIX: ${REDIS_KEY_PREFIX:-kgharness}
-      RAG_DATABASE_URL: postgresql://${POSTGRES_USER:-kgharness}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kgharness}
-      BUSINESS_DATABASE_URL: postgresql://${POSTGRES_USER:-kgharness}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kgharness}
-      BUSINESS_DB_SCHEMA: business
-      RAG_STORAGE_DIR: /data/rag
+      <<: *backend-environment
       AGENT_WORKER_CONCURRENCY: ${AGENT_WORKER_CONCURRENCY:-2}
       AGENT_WORKER_REGISTRY_TTL_SECONDS: ${AGENT_WORKER_REGISTRY_TTL_SECONDS:-45}
       AGENT_WORKER_SHUTDOWN_GRACE_SECONDS: ${AGENT_WORKER_SHUTDOWN_GRACE_SECONDS:-30}
       AGENT_RUN_MAX_ATTEMPTS: ${AGENT_RUN_MAX_ATTEMPTS:-3}
       AGENT_RUN_RETRY_BASE_SECONDS: ${AGENT_RUN_RETRY_BASE_SECONDS:-1}
-    volumes:
-      - rag-data:/data
-      - agent-output:/workspace/app/output
-      - agent-upload:/workspace/app/updated
-    depends_on:
-      postgres:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-m", "app.agent.worker_health"]
       interval: 10s
@@ -85,18 +97,12 @@ services:
       retries: 6
       start_period: 30s
     mem_limit: 1800m
-    networks: [app, data]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   rag-worker:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    restart: unless-stopped
+    <<: *backend
     command: ["python", "-m", "app.rag.worker"]
-    env_file: ../.env
     environment:
+      <<: *backend-environment
       RAG_DATABASE_URL: postgresql://${POSTGRES_USER:-kgharness}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kgharness}
       RAG_STORAGE_DIR: /data/rag
     volumes:
@@ -104,8 +110,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks: [data]
     mem_limit: 900m
-    networks: [app, data]
 
   frontend:
     build:
@@ -113,12 +119,17 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "${APP_PORT:-80}:80"
+      - "${APP_BIND_ADDRESS:-0.0.0.0}:${APP_PORT:-80}:80"
     depends_on:
       api:
         condition: service_healthy
       agent-worker:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost/"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
     mem_limit: 128m
     networks: [app]
 
@@ -129,6 +140,7 @@ networks:
 
 volumes:
   postgres-data:
+  redis-data:
   rag-data:
   agent-output:
   agent-upload:
